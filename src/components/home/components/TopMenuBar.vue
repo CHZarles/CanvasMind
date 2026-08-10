@@ -46,16 +46,6 @@
 
       <div v-if="sideMenuSettings.showBottomMenu" class="top-menu-bar__actions">
         <button
-          v-if="marketingItem"
-          type="button"
-          class="top-menu-bar__action-chip top-menu-bar__action-chip--marketing"
-          @click="openMarketingEntry"
-        >
-          <span class="top-menu-bar__action-kicker">{{ isLoggedIn ? '会员中心' : (marketingItem.title || '福利') }}</span>
-          <span class="top-menu-bar__action-value">{{ marketingPointsText }}</span>
-        </button>
-
-        <button
           v-if="accountEntryItem && !isLoggedIn"
           type="button"
           class="top-menu-bar__action-chip"
@@ -103,12 +93,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useLoginModalStore } from '@/stores/login-modal'
-import { useMarketingCenterStore } from '@/stores/marketing-center'
-import { useMarketingModalStore } from '@/stores/marketing-modal'
 import { useSystemSettingsStore } from '@/stores/system-settings'
 import { useHomeSideMenuConfig } from '@/composables/useHomeSideMenuConfig'
 import HomeSideMenuIcon from './HomeSideMenuIcon.vue'
@@ -117,8 +105,6 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const { openLoginModal } = useLoginModalStore()
-const { openMarketingModal, isVisible: marketingModalVisible } = useMarketingModalStore()
-const marketingCenterStore = useMarketingCenterStore()
 const { publicSystemSettings } = useSystemSettingsStore()
 const { sideMenuSettings, topItems, centerItems, bottomItems } = useHomeSideMenuConfig()
 
@@ -133,25 +119,14 @@ const resolvedAvatarSrc = computed(() => {
     || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='100' fill='%23E5E7EB'/%3E%3Ccircle cx='100' cy='76' r='30' fill='%239CA3AF'/%3E%3Cpath d='M52 154c8-24 28-38 48-38s40 14 48 38' fill='%239CA3AF'/%3E%3C/svg%3E"
 })
 
-const marketingPointsText = computed(() => {
-  if (!isLoggedIn.value) {
-    return '福利'
-  }
-  return String(marketingCenterStore.pointsBalance.value || 0)
-})
-
-const marketingItem = computed(() => bottomItems.value.find(item => item.key === 'marketing') || null)
 const accountEntryItem = computed(() => bottomItems.value.find(item => item.key === 'account-entry') || null)
 const accountItem = computed(() => centerItems.value.find(item => item.key === 'account') || null)
 const accountDisplayItem = computed(() => accountEntryItem.value || accountItem.value || null)
 const actionItems = computed(() => {
-  return bottomItems.value.filter(item => !['marketing', 'account-entry'].includes(item.key))
+  return bottomItems.value.filter(item => item.key !== 'account-entry')
 })
 
 const resolveMenuRoutePath = (item: { key: string, actionType: string, actionValue: string }) => {
-  if (item.key === 'workflow' && item.actionType === 'route') {
-    return '/agentic-assets-canvas'
-  }
   return item.actionValue
 }
 
@@ -196,13 +171,6 @@ const handleTopItemClick = (item?: { actionType?: string, actionValue?: string }
   }
 }
 
-const openMarketingEntry = () => {
-  openMarketingModal({
-    source: 'top-menu',
-    tab: isLoggedIn.value ? 'recharge' : 'membership',
-  })
-}
-
 const navigateToAccount = () => {
   if (!isLoggedIn.value) {
     openLoginModal('account-entry')
@@ -218,22 +186,11 @@ const handleBottomItemClick = (item: { actionType: string, actionValue: string }
     return
   }
 
-  if (item.actionType === 'dialog' && item.actionValue === 'marketing') {
-    openMarketingEntry()
-    return
-  }
-
   if (item.actionType === 'dialog' && item.actionValue === 'login') {
     openLoginModal('top-menu')
   }
 }
 
-onMounted(() => {
-  if (marketingModalVisible.value) {
-    return
-  }
-  void marketingCenterStore.loadOverview()
-})
 </script>
 
 <style scoped>

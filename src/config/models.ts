@@ -5,7 +5,7 @@
 
 import { ref } from 'vue'
 import { buildApiUrl } from '@/api/http'
-import { readApiData } from '@/api/response'
+import { getAuthHeaders } from '@/api/auth'
 
 export interface SizeOption {
   label: string
@@ -95,7 +95,20 @@ export interface PublicModelCatalogResult {
   }
 }
 
-const MODEL_CATALOG_API_PATH = '/api/provider-config/catalog'
+interface RuntimeCatalogModel {
+  id: string
+  display_name?: string
+  quality_tier?: string
+  speed_tier?: string
+  modes?: Record<string, Record<string, any>>
+  parameters_schema?: Record<string, any>
+  recommended_parameters?: Record<string, any>
+  capabilities?: Record<string, any>
+}
+
+interface RuntimeCatalog {
+  models?: RuntimeCatalogModel[]
+}
 
 // 豆包图片尺寸选项
 export const SEEDREAM_SIZE_OPTIONS: SizeOption[] = [
@@ -176,14 +189,17 @@ const emptyCatalog: PublicModelCatalogResult = {
 
 const modelCatalogRef = ref<PublicModelCatalogResult>(emptyCatalog)
 let modelCatalogPromise: Promise<PublicModelCatalogResult> | null = null
+let modelCatalogLoaded = false
 
 const toImageModel = (item: PublicModelCatalogItem): ImageModel => {
   const defaultParams = item.defaultParamsJson || {}
   const normalizedSize = String(defaultParams.size || '').trim().toLowerCase()
   const hasSeedreamSize = /\d+x\d+/.test(normalizedSize)
-  const sizes = hasSeedreamSize
-    ? SEEDREAM_SIZE_OPTIONS.map(option => option.key)
-    : BANANA_SIZE_OPTIONS.map(option => option.key)
+  const modes = (item.capabilityJson?.modes || {}) as Record<string, any>
+  const sizes = [...new Set(Object.values(modes).flatMap(mode => {
+    const schema = mode?.parameters_schema?.properties?.size
+    return (schema?.enum || schema?.anyOf?.flatMap((option: any) => option.enum || []) || []) as string[]
+  }))]
 
   // 单次出图最大张数：从 capabilityJson.maxImagesPerRequest 读取，未配置时缺省 1（最保守，
   // 防止跨上游误差直接打穿；管理员可在后台模型配置里覆写为对应上游的真实上限）。
@@ -206,7 +222,7 @@ const toImageModel = (item: PublicModelCatalogItem): ImageModel => {
     defaultParams,
     sortOrder: item.sortOrder,
     isDefault: item.isDefault,
-    sizes,
+    sizes: sizes.length ? sizes : [String(defaultParams.size || '')].filter(Boolean),
     maxImagesPerRequest,
     qualities: hasSeedreamSize ? SEEDREAM_QUALITY_OPTIONS : undefined,
     getSizesByQuality: hasSeedreamSize
@@ -229,9 +245,32 @@ const toVideoModel = (item: PublicModelCatalogItem): VideoModel => ({
   defaultParams: item.defaultParamsJson || {},
   sortOrder: item.sortOrder,
   isDefault: item.isDefault,
-  ratios: VIDEO_RATIO_LIST.map(option => option.key),
-  durs: VIDEO_DURATION_OPTIONS,
+  ratios: runtimeVideoRatios(item),
+  durs: runtimeVideoDurations(item),
 })
+
+const runtimeVideoSchema = (item: PublicModelCatalogItem) => {
+  const modes = (item.capabilityJson?.modes || {}) as Record<string, any>
+  return Object.values(modes)[0]?.parameters_schema?.properties || {}
+}
+
+const runtimeVideoRatios = (item: PublicModelCatalogItem): string[] => {
+  const ratios = runtimeVideoSchema(item).ratio?.enum
+  return Array.isArray(ratios) ? ratios.map(String) : VIDEO_RATIO_LIST.map(option => option.key)
+}
+
+const runtimeVideoDurations = (item: PublicModelCatalogItem): DurationOption[] => {
+  const duration = runtimeVideoSchema(item).duration
+  const minimum = Number(duration?.minimum ?? duration?.anyOf?.[0]?.minimum)
+  const maximum = Number(duration?.maximum ?? duration?.anyOf?.[0]?.maximum)
+  if (Number.isFinite(minimum) && Number.isFinite(maximum)) {
+    return Array.from({ length: maximum - minimum + 1 }, (_, index) => {
+      const value = minimum + index
+      return { label: `${value} 秒`, key: value }
+    })
+  }
+  return VIDEO_DURATION_OPTIONS
+}
 
 const toChatModel = (item: PublicModelCatalogItem): ChatModel => ({
   id: item.id,
@@ -261,23 +300,96 @@ const applyModelCatalog = (value?: PublicModelCatalogResult) => {
 }
 
 export const loadPublicModelCatalog = async (force = false) => {
+  if (!force && modelCatalogLoaded) {
+    return modelCatalogRef.value
+  }
   if (!force && modelCatalogPromise) {
     return modelCatalogPromise
   }
 
-  modelCatalogPromise = fetch(buildApiUrl(MODEL_CATALOG_API_PATH), {
-    method: 'GET',
-    credentials: 'include',
-    cache: 'no-store',
-  })
-    .then(response => readApiData<PublicModelCatalogResult>(response))
-    .then(data => applyModelCatalog(data))
-    .catch(() => applyModelCatalog(emptyCatalog))
-    .finally(() => {
-      modelCatalogPromise = null
+  modelCatalogPromise = Promise.all([
+    fetchRuntimeCatalog('/api/agent/models'),
+    fetchRuntimeCatalog('/api/image-flows/information'),
+    fetchRuntimeCatalog('/api/video-flows/information'),
+  ])
+    .then(([chat, image, video]) => {
+      modelCatalogLoaded = true
+      return applyModelCatalog(buildRuntimeCatalog(chat, image, video))
     })
+    .catch(() => modelCatalogRef.value)
 
   return modelCatalogPromise
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('auth:login-success', () => {
+    void loadPublicModelCatalog(true)
+  })
+}
+
+const fetchRuntimeCatalog = async (path: string): Promise<RuntimeCatalog> => {
+  const response = await fetch(buildApiUrl(path), { cache: 'no-store', headers: getAuthHeaders() })
+  if (!response.ok) throw new Error(`模型目录请求失败 (${response.status})`)
+  return response.json()
+}
+
+const runtimeCatalogItem = (
+  model: RuntimeCatalogModel,
+  category: 'CHAT' | 'IMAGE' | 'VIDEO',
+  index: number,
+): PublicModelCatalogItem => {
+  const modes = model.modes || {}
+  const firstMode = Object.values(modes)[0] || {}
+  const parametersSchema = model.parameters_schema || firstMode.parameters_schema || {}
+  const sequential = parametersSchema.properties?.sequential_image_generation_options
+  const maxImages = sequential?.properties?.max_images?.maximum
+  return {
+    id: model.id,
+    selectionKey: model.id,
+    providerId: 'adflow',
+    providerCode: 'adflow',
+    providerName: 'AdFlow',
+    category,
+    label: model.display_name || model.id,
+    modelKey: model.id,
+    description: [model.quality_tier, model.speed_tier].filter(Boolean).join(' / '),
+    capabilityJson: {
+      ...(model.capabilities || {}),
+      modes,
+      ...(maxImages ? { maxImagesPerRequest: maxImages } : {}),
+    },
+    defaultParamsJson: model.recommended_parameters || firstMode.recommended_parameters || {},
+    sortOrder: index,
+    isDefault: index === 0,
+  }
+}
+
+const buildRuntimeCatalog = (
+  chat: RuntimeCatalog,
+  image: RuntimeCatalog,
+  video: RuntimeCatalog,
+): PublicModelCatalogResult => {
+  const models = {
+    chat: (chat.models || []).map((model, index) => runtimeCatalogItem(model, 'CHAT', index)),
+    image: (image.models || []).map((model, index) => runtimeCatalogItem(model, 'IMAGE', index)),
+    video: (video.models || []).map((model, index) => runtimeCatalogItem(model, 'VIDEO', index)),
+  }
+  return {
+    providers: [{
+      id: 'adflow',
+      code: 'adflow',
+      name: 'AdFlow',
+      iconUrl: '',
+      supportedTypes: ['CHAT', 'IMAGE', 'VIDEO'],
+      sortOrder: 0,
+    }],
+    models,
+    defaults: {
+      chat: models.chat[0]?.selectionKey || '',
+      image: models.image[0]?.selectionKey || '',
+      video: models.video[0]?.selectionKey || '',
+    },
+  }
 }
 
 export const getPublicModelCatalog = () => modelCatalogRef.value

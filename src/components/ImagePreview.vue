@@ -7,11 +7,18 @@
             <div class="image-player-container">
               <div class="image-player-content">
                 <img
-                  v-if="currentImage"
+                  v-if="currentImage && !isVideo"
                   class="image-player-image"
                   :src="currentImage.src"
                   :alt="currentImage.id"
                 >
+                <video
+                  v-else-if="currentImage && isVideo"
+                  class="image-player-image"
+                  :src="currentImage.src"
+                  controls
+                  playsinline
+                ></video>
               </div>
             </div>
 
@@ -151,7 +158,7 @@
           </div>
 
           <div class="operation-buttons">
-            <div class="operation-button-pTosuC">
+            <div v-if="showFavorite" class="operation-button-pTosuC">
               <button class="icon-wrapper-SP2zJN" type="button" @click="handleFavorite">
                 <svg width="1em" height="1em" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg">
                   <g>
@@ -167,7 +174,7 @@
               </button>
             </div>
 
-            <div class="operation-button-pTosuC">
+            <div v-if="showPublish" class="operation-button-pTosuC">
               <button class="icon-wrapper-SP2zJN" type="button" @click="handlePublish">
                 <svg width="1em" height="1em" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg">
                   <g>
@@ -213,7 +220,8 @@
                 :class="{ 'selected-_OYWHD': index === internalIndex }"
                 @click="internalIndex = index"
               >
-                <img :src="image.src" :alt="image.id">
+                <video v-if="image.contentType?.startsWith('video/')" :src="image.src" muted preload="metadata"></video>
+                <img v-else :src="image.src" :alt="image.id">
               </div>
             </div>
           </div>
@@ -260,7 +268,7 @@
             <div class="group-container">
               <div class="group">
                 <div class="detail-button-view-container">
-                  <button class="lv-btn lv-btn-secondary lv-btn-size-default lv-btn-shape-square detail-button-view" type="button" @click="handleGenerateVideo">
+                  <button v-if="!isVideo" class="lv-btn lv-btn-secondary lv-btn-size-default lv-btn-shape-square detail-button-view" type="button" @click="handleGenerateVideo">
                     <div class="icon-f2nkjH">
                       <svg width="1em" height="1em" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg">
                         <g>
@@ -495,6 +503,7 @@ import { computed, ref, watch } from 'vue'
 interface ImageItem {
   id: string
   src: string
+  contentType?: string
   promptText?: string
   modelLabel?: string
   aspectRatioLabel?: string
@@ -507,12 +516,16 @@ interface Props {
   visible: boolean
   currentIndex: number
   images: ImageItem[]
+  showFavorite?: boolean
+  showPublish?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   visible: false,
   currentIndex: 0,
   images: () => [],
+  showFavorite: true,
+  showPublish: true,
 })
 
 const emit = defineEmits<{
@@ -533,6 +546,8 @@ const currentImage = computed(() => {
   if (props.images.length === 0) return null
   return props.images[internalIndex.value] || props.images[0]
 })
+
+const isVideo = computed(() => currentImage.value?.contentType?.startsWith('video/') === true)
 
 const currentPromptText = computed(() => currentImage.value?.promptText || '暂无提示词')
 const currentModelLabel = computed(() => currentImage.value?.modelLabel || '图片 4.0')

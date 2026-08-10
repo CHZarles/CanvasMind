@@ -19,10 +19,14 @@
  *   canvasChatSessions / canvasActiveChatId。
  */
 import { computed, ref, watch } from 'vue'
-import { getDefaultChatModelKey, getDefaultImageModelKey, getDefaultVideoModelKey, getModelByName } from '@/config/models'
-import type { WorkflowCanvasPosition } from './workflow-orchestrator-types'
+import type { CanvasImageVersion, CanvasMediaReference } from './imageVersions'
 
-export type WorkflowNodeType = 'text' | 'imageConfig' | 'videoConfig' | 'image' | 'video' | 'llmConfig'
+export interface WorkflowCanvasPosition {
+  x: number
+  y: number
+}
+
+export type WorkflowNodeType = 'text' | 'image' | 'video'
 
 export interface WorkflowNodeDataBase {
   label?: string
@@ -43,22 +47,14 @@ export interface WorkflowTextNodeData extends WorkflowNodeDataBase {
   fontSize?: number
 }
 
-export interface WorkflowImageConfigNodeData extends WorkflowNodeDataBase {
-  prompt?: string
-  model?: string
-  size?: string
-  quality?: string
-}
-
-export interface WorkflowVideoConfigNodeData extends WorkflowNodeDataBase {
-  prompt?: string
-  ratio?: string
-  duration?: number
-  model?: string
-}
-
 export interface WorkflowImageNodeData extends WorkflowNodeDataBase {
   url: string
+  prompt?: string
+  model?: string
+  mode?: string
+  parameters?: Record<string, unknown>
+  media_ref?: CanvasMediaReference
+  media_versions?: CanvasImageVersion[]
   base64?: string
   duration?: number
   /** 批量生图组首标记（节点内自渲染叠卡） */
@@ -74,22 +70,17 @@ export interface WorkflowImageNodeData extends WorkflowNodeDataBase {
 export interface WorkflowVideoNodeData extends WorkflowNodeDataBase {
   url: string
   duration: number
-}
-
-export interface WorkflowLlmConfigNodeData extends WorkflowNodeDataBase {
-  systemPrompt?: string
+  prompt?: string
   model?: string
-  outputFormat?: string
-  outputContent?: string
+  mode?: string
+  parameters?: Record<string, unknown>
+  media_ref?: CanvasMediaReference
 }
 
 export interface WorkflowNodeDataMap {
   text: WorkflowTextNodeData
-  imageConfig: WorkflowImageConfigNodeData
-  videoConfig: WorkflowVideoConfigNodeData
   image: WorkflowImageNodeData
   video: WorkflowVideoNodeData
-  llmConfig: WorkflowLlmConfigNodeData
 }
 
 export type WorkflowNodeData = WorkflowNodeDataMap[WorkflowNodeType]
@@ -293,38 +284,25 @@ const getDefaultNodeData = <T extends WorkflowNodeType>(type: T): WorkflowNodeDa
   switch (type) {
     case 'text':
       return { content: '', label: '文本输入' } as WorkflowNodeDataMap[T]
-    case 'imageConfig': {
-      const model = getModelByName(getDefaultImageModelKey())
-      return {
-        prompt: '',
-        model: getDefaultImageModelKey(),
-        size: model?.defaultParams?.size || '1x1',
-        quality: model?.defaultParams?.quality || 'standard',
-        label: '文生图'
-      } as WorkflowNodeDataMap[T]
-    }
-    case 'videoConfig': {
-      const model = getModelByName(getDefaultVideoModelKey())
-      return {
-        prompt: '',
-        ratio: model?.defaultParams?.ratio || '16x9',
-        duration: model?.defaultParams?.duration || 5,
-        model: getDefaultVideoModelKey(),
-        label: '图生视频'
-      } as WorkflowNodeDataMap[T]
-    }
     case 'video':
-      return { url: '', duration: 0, label: '视频节点' } as WorkflowNodeDataMap[T]
-    case 'image':
-      return { url: '', label: '图片节点' } as WorkflowNodeDataMap[T]
-    case 'llmConfig':
       return {
-        systemPrompt: '',
-        model: getDefaultChatModelKey(),
-        outputFormat: 'text',
-        outputContent: '',
-        label: 'LLM文本生成'
-      } as WorkflowNodeDataMap[T]
+        url: '',
+        duration: 5,
+        prompt: '',
+        model: 'video.seedance-2',
+        mode: 'text_to_video',
+        parameters: { resolution: '720p', ratio: '16:9', duration: 5, watermark: false, generate_audio: true },
+        label: '视频节点',
+      } as unknown as WorkflowNodeDataMap[T]
+    case 'image':
+      return {
+        url: '',
+        prompt: '',
+        model: 'image.seedream-5-pro',
+        mode: 'text_to_image',
+        parameters: { size: '2K', response_format: 'url', watermark: false, output_format: 'jpeg' },
+        label: '图片节点',
+      } as unknown as WorkflowNodeDataMap[T]
     default:
       throw new Error(`不支持的节点类型: ${String(type)}`)
   }
@@ -524,22 +502,9 @@ export const manualSaveHistory = () => {
   commitHistory()
 }
 
-/**
- * 初始化画布（带示例数据）
- */
+/** 初始化空画布。 */
 export const initSampleData = () => {
   clearCanvas()
-  addNode('text', { x: 150, y: 150 }, {
-    content: '一只金毛寻回犬在草地上奔跑，摇着尾巴，脸上带着快乐的表情。',
-    label: '文本输入'
-  })
-  addNode('imageConfig', { x: 500, y: 150 }, { label: '文生图' })
-  addEdge({
-    source: 'node_0',
-    target: 'node_1',
-    sourceHandle: 'right',
-    targetHandle: 'left'
-  })
 }
 
 /**

@@ -21,10 +21,6 @@ const nodeColor = (node: Node) => {
       return cs.getPropertyValue('--brand-image').trim() || '#39acff'
     case 'video':
       return cs.getPropertyValue('--brand-video').trim() || '#6b68ff'
-    case 'imageConfig':
-    case 'videoConfig':
-    case 'llmConfig':
-      return cs.getPropertyValue('--brand-main-default').trim() || '#00cae0'
     default:
       return fallback
   }

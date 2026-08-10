@@ -17,8 +17,8 @@ import type {
   WorkflowCanvasNode,
   WorkflowCanvasEdge,
   WorkflowNodeType,
+  WorkflowCanvasPosition,
 } from '@/views/workflow/composables/useWorkflowCanvas'
-import type { WorkflowCanvasPosition } from '@/views/workflow/composables/workflow-orchestrator-types'
 
 // ============================================================
 // 剪贴板（Cmd+C / Cmd+V）
@@ -191,7 +191,4 @@ export const NODE_SIZE_DEFAULTS: Record<WorkflowNodeType, NodeSizeConstraint> = 
   text: { minWidth: 220, minHeight: 120 },
   image: { minWidth: 220, minHeight: 160 },
   video: { minWidth: 240, minHeight: 160, keepRatio: true, aspectRatio: 16 / 9 },
-  imageConfig: { minWidth: 280, minHeight: 200 },
-  videoConfig: { minWidth: 280, minHeight: 200 },
-  llmConfig: { minWidth: 320, minHeight: 220 },
 }

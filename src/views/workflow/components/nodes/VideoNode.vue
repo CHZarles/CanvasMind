@@ -10,16 +10,14 @@
  *   - 节点外 -56px "+" 按钮
  *   - 选中后下方浮出 CanvasPromptInput（视频模型 + 480p/5s/... chip + ¥3）
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVueFlow } from '@vue-flow/core'
 import {
   CopyDocument,
   Download,
   Delete,
   VideoCamera,
-  Aim,
   Picture,
-  Film,
   Upload as UploadIcon,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -37,7 +35,12 @@ import {
   edges,
   type WorkflowVideoNodeData,
 } from '../../composables/useWorkflowCanvas'
-import { uploadStorageFile } from '@/api/storage'
+import {
+  generateCanvasNode,
+  prepareVideoNode,
+  uploadNodeMedia,
+} from '../../composables/useAgentRuntime'
+import { loadMediaPreview } from '../../api/agent'
 import { loadPublicModelCatalog } from '@/config/models'
 
 const props = defineProps<{
@@ -54,15 +57,45 @@ const videoUrl = ref(props.data?.url || '')
 const isLoading = ref(!!props.data?.loading)
 const errorMsg = ref(props.data?.error || '')
 const fileInputRef = ref<HTMLInputElement | null>(null)
+let ownedPreviewUrl = ''
+let previewRequest = 0
+
+const syncPreviewUrl = async (source: unknown) => {
+  const request = ++previewRequest
+  if (ownedPreviewUrl) {
+    URL.revokeObjectURL(ownedPreviewUrl)
+    ownedPreviewUrl = ''
+  }
+  const value = String(source || '')
+  if (!value) {
+    videoUrl.value = ''
+    return
+  }
+  if (/\/api\//i.test(value) && !/^(blob|data):/i.test(value)) videoUrl.value = ''
+  try {
+    const resolved = await loadMediaPreview(value)
+    if (request !== previewRequest) {
+      if (resolved !== value && resolved.startsWith('blob:')) URL.revokeObjectURL(resolved)
+      return
+    }
+    if (resolved !== value) ownedPreviewUrl = resolved
+    videoUrl.value = resolved
+  } catch {
+    if (request === previewRequest) videoUrl.value = ''
+  }
+}
 
 watch(
-  [() => props.data?.url, () => props.data?.loading, () => props.data?.error],
-  ([url, loading, error]) => {
-    if (url !== undefined) videoUrl.value = url
+  [() => props.data?.loading, () => props.data?.error],
+  ([loading, error]) => {
     if (loading !== undefined) isLoading.value = loading
     if (error !== undefined) errorMsg.value = error
   },
 )
+watch(() => props.data?.url, (url) => void syncPreviewUrl(url), { immediate: true })
+onBeforeUnmount(() => {
+  if (ownedPreviewUrl) URL.revokeObjectURL(ownedPreviewUrl)
+})
 
 const hasUpstream = computed(() => edges.value.some((e) => e.target === props.id))
 
@@ -80,13 +113,8 @@ const handleFileChange = async (event: Event) => {
   try {
     isLoading.value = true
     updateNode(props.id, { loading: true })
-    const uploaded = await uploadStorageFile(file, 'asset')
-    if (uploaded) {
-      videoUrl.value = uploaded.publicUrl
-      updateNode(props.id, { url: uploaded.publicUrl, loading: false })
-    } else {
-      throw new Error('upload returned empty')
-    }
+    await uploadNodeMedia(props.id, file)
+    videoUrl.value = URL.createObjectURL(file)
   } catch (err) {
     ElMessage.error('视频上传失败')
     updateNode(props.id, { loading: false, error: '上传失败' })
@@ -112,23 +140,20 @@ const handleDuplicate = () => {
   if (newId) setTimeout(() => updateNodeInternals([newId]), 50)
 }
 
-const handleAllReference = () => ElMessage.info('「全能参考」接入中，敬请期待')
 const handleImageToVideo = () => {
   const node = nodes.value.find((n) => n.id === props.id)
   if (!node) return
-  const newId = addNode('videoConfig', { x: node.position.x + 380, y: node.position.y })
+  const newId = addNode('video', { x: node.position.x + 480, y: node.position.y })
   addEdge({
     source: props.id,
     target: newId,
     sourceHandle: 'right',
     targetHandle: 'left',
     type: 'imageRole',
-    data: { imageRole: 'input_reference' },
+    data: { imageRole: 'first_frame' },
   })
   setTimeout(() => updateNodeInternals([newId]), 50)
 }
-const handleFirstLastFrame = () => ElMessage.info('「首尾帧生视频」接入中，敬请期待')
-
 const hoverActions = computed<NodeToolbarAction[]>(() => {
   const list: NodeToolbarAction[] = [
     { id: 'duplicate', label: '复制', icon: CopyDocument, onClick: handleDuplicate },
@@ -141,19 +166,33 @@ const hoverActions = computed<NodeToolbarAction[]>(() => {
 })
 
 const emptyMenuItems = [
-  { id: 'all-ref', label: '全能参考', icon: Aim, onClick: handleAllReference },
   { id: 'i2v', label: '图生视频', icon: Picture, onClick: handleImageToVideo },
-  { id: 'first-last', label: '首尾帧生视频', icon: Film, onClick: handleFirstLastFrame },
 ]
 
-// 选中态下方浮层：用 ContentGenerator（与 /generate 同款），锁定 video 类型
 onMounted(() => {
   void loadPublicModelCatalog()
 })
-// TODO: 视频生成走 FormData + createVideoTask + pollVideoTask（与 image 任务异步路径不同）
-// 当前只完成 UI 复用，真实视频生成等后续接入
-const handlePromptSend = (text: string) => {
-  ElMessage.success(`发送：${text.slice(0, 30)}…（视频生成 API 接入中）`)
+
+const isGenerating = ref(false)
+const handlePromptSend = async (
+  text: string,
+  _type: string,
+  options?: { modelKey?: string; ratio?: string; duration?: string },
+) => {
+  if (!text.trim() || isGenerating.value) return
+  isGenerating.value = true
+  try {
+    prepareVideoNode(props.id, text, {
+      model: options?.modelKey,
+      ratio: options?.ratio,
+      duration: options?.duration,
+    })
+    await generateCanvasNode(props.id, 'video')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '视频生成失败')
+  } finally {
+    isGenerating.value = false
+  }
 }
 </script>
 

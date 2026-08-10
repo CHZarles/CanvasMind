@@ -2,14 +2,7 @@
   <div class="home-header">
     <div v-if="showWorkbenchTitle" class="header-bto0dS">
       <template v-if="showSiteNameInTitle">{{ siteNamePrefix }}</template>
-      {{ workbenchPrefixText }}
-      <TypeSelector
-        v-if="showModeSelectorInTitle"
-        :current-label="currentModeLabel"
-        :options="modeOptions"
-      />
-      <span v-else-if="currentModeLabel" class="home-header-mode-label">{{ currentModeLabel }}</span>
-      {{ workbenchSuffixText }}
+      {{ workbenchPrefixText }}创作，{{ workbenchSuffixText }}
     </div>
     <div
       v-if="showWorkbenchGenerator"
@@ -20,6 +13,10 @@
         class="home-header-content-generator"
         :collapsible="false"
         :default-expanded="true"
+        initial-creation-type="agent"
+        hide-type-selector
+        hide-skill-selector
+        hide-agent-actions
         popup-placement="bottom"
         @send="handleSend"
       />
@@ -29,9 +26,6 @@
       class="home-header-site-description-canana"
     >
       {{ siteDescription }}
-    </div>
-    <div v-if="showTaskIndicator" :class="{ 'home-header-preview-mask': previewReadonly }">
-      <TaskIndicator />
     </div>
     <HomeBanner
       v-if="showBanner"
@@ -44,25 +38,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import TypeSelector from './TypeSelector.vue'
 import GenerateContentGenerator from '@/components/generate/ContentGenerator.vue'
-import TaskIndicator from './TaskIndicator.vue'
 import HomeBanner from './HomeBanner.vue'
 import { useSystemSettingsStore } from '@/stores/system-settings'
 import { useHomeLayoutConfig } from '@/composables/useHomeLayoutConfig'
 import type { SystemConfigPayload, SystemHomeBannerItemConfig } from '@/api/system-config'
-import type { CreationType } from '@/components/generate/selectors'
-
-interface HomeHeaderSendOptions {
-  model?: string
-  skill?: string
-  ratio?: string
-  resolution?: string
-  modelKey?: string
-  duration?: string
-  feature?: string
-  referenceImages?: string[]
-}
 
 const props = withDefaults(defineProps<{
   systemFormOverride?: SystemConfigPayload | null
@@ -121,54 +101,29 @@ const showWorkbenchGenerator = computed(() => resolvedWorkbenchSettings.value.ge
 const showSiteNameInTitle = computed(() => resolvedWorkbenchSettings.value.showSiteName !== false && !!siteNamePrefix.value)
 const workbenchPrefixText = computed(() => String(resolvedWorkbenchSettings.value.prefixText || '').trim() || '开启你的')
 const workbenchSuffixText = computed(() => String(resolvedWorkbenchSettings.value.suffixText || '').trim() || '即刻造梦！')
-const showModeSelectorInTitle = computed(() => resolvedWorkbenchSettings.value.showModeSelectorInTitle !== false)
-const modeOptions = computed(() => {
-  return (resolvedEntryDisplay.value.mode.options || [])
-    .map(item => String(item.label || '').trim())
-    .filter(Boolean)
-})
 const siteDescription = computed(() => String(resolvedSystemSettings.value.siteInfo.siteDescription || '').trim())
 const showSiteDescription = computed(() => resolvedHeaderSettings.value.showSiteDescription !== false)
-const showTaskIndicator = computed(() => {
-  return resolvedWorkbenchSettings.value.taskIndicatorEnabled !== false
-    && resolvedHeaderSettings.value.showTaskIndicator !== false
-})
 const showBanner = computed(() => {
   return resolvedWorkbenchSettings.value.bannerEnabled !== false
     && resolvedHeaderSettings.value.showBanner !== false
     && resolvedBannerSettings.value.enabled !== false
     && resolvedBannerItems.value.some(item => item.visible !== false)
 })
-const currentModeLabel = computed(() => {
-  const defaultMode = String(resolvedEntryDisplay.value.mode.defaultMode || '').trim()
-  const options = resolvedEntryDisplay.value.mode.options || []
-  return options.find(item => item.value === defaultMode)?.label || options[0]?.label || 'Agent 模式'
-})
 
-const handleSend = (message: string, type: CreationType, options?: HomeHeaderSendOptions) => {
+const handleSend = (_message: string, _type: unknown, options?: { modelKey?: string }) => {
   if (props.previewReadonly) {
     return
   }
 
   if (typeof window !== 'undefined') {
-    window.sessionStorage.setItem('canana:home-header:pending-send', JSON.stringify({
-      modelKey: options?.modelKey || '',
-      duration: options?.duration || '',
-      feature: options?.feature || '',
-      referenceImages: Array.isArray(options?.referenceImages) ? options.referenceImages : [],
+    window.sessionStorage.setItem('adflow:workflow:pending-message', JSON.stringify({
+      text: _message,
+      model_id: options?.modelKey || '',
     }))
   }
 
   router.push({
-    path: '/generate',
-    query: {
-      message,
-      type,
-      ...(options?.model && { model: options.model }),
-      ...(options?.skill && { skill: options.skill }),
-      ...(options?.ratio && { ratio: options.ratio }),
-      ...(options?.resolution && { resolution: options.resolution })
-    }
+    path: '/workflow',
   })
 }
 </script>
@@ -184,12 +139,6 @@ const handleSend = (message: string, type: CreationType, options?: HomeHeaderSen
   font-size: 14px;
   line-height: 1.75;
   color: var(--text-secondary);
-}
-
-.home-header-mode-label {
-  display: inline-flex;
-  align-items: center;
-  margin: 0 8px;
 }
 
 .home-header-preview-mask {

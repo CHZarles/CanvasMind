@@ -28,9 +28,6 @@
           @set-image-filter="setImageFilter"
           @batch-delete="handleBatchDelete"
           @batch-download="handleBatchDownload"
-          @batch-publish="handleBatchPublish"
-          @batch-favorite="handleBatchFavorite"
-          @edit-in-capcut="handleEditInCapCut"
           @enter-batch-mode="enterBatchMode"
           @exit-batch-mode="exitBatchMode"
           @asset-click="handleAssetClick"
@@ -39,38 +36,16 @@
           :active="activeTab === 'video'"
           :video-filter-options="videoFilterOptions"
           :video-filter="videoFilter"
+          :is-batch-mode="isBatchMode"
+          :selected-count="selectedCount"
+          :video-groups="videoGroups"
+          :is-selected="isSelected"
           @set-video-filter="setVideoFilter"
+          @batch-delete="handleBatchDelete"
+          @batch-download="handleBatchDownload"
           @enter-batch-mode="enterBatchMode"
-          @edit-in-capcut="handleEditInCapCut"
-      />
-      <AssetCanvasTab
-          :active="activeTab === 'canvas'"
-          :canvas-filter-options="canvasFilterOptions"
-          :canvas-filter="canvasFilter"
-          @set-canvas-filter="setCanvasFilter"
-          @enter-batch-mode="enterBatchMode"
-      />
-      <AssetEditorTab
-          :active="activeTab === 'editor'"
-          :editor-filter-options="editorFilterOptions"
-          :editor-filter="editorFilter"
-          @set-editor-filter="setEditorFilter"
-          @enter-batch-mode="enterBatchMode"
-      />
-      <AssetStoryTab
-          :active="activeTab === 'story'"
-          :story-filter-options="storyFilterOptions"
-          :story-filter="storyFilter"
-          @set-story-filter="setStoryFilter"
-          @enter-batch-mode="enterBatchMode"
-      />
-      <AssetAudioTab
-          :active="activeTab === 'audio'"
-          :audio-filter-options="audioFilterOptions"
-          :audio-filter="audioFilter"
-          @set-audio-filter="setAudioFilter"
-          @enter-batch-mode="enterBatchMode"
-          @edit-in-capcut="handleEditInCapCut"
+          @exit-batch-mode="exitBatchMode"
+          @asset-click="handleAssetClick"
       />
     </div>
 
@@ -78,19 +53,12 @@
       <ImagePreview
           v-model:visible="previewVisible"
           v-model:currentIndex="previewIndex"
-          :images="allImages"
+          :images="previewItems"
+          :show-favorite="false"
+          :show-publish="false"
           @download="handlePreviewDownload"
-          @favorite="handlePreviewFavorite"
-          @publish="handlePreviewPublish"
           @generate-video="handlePreviewGenerateVideo"
           @edit-in-canvas="handlePreviewEditInCanvas"
-      />
-
-      <PublishArtworkModal
-          v-model:visible="publishArtworkVisible"
-          :image="publishTargetImage"
-          :submitting="publishSubmitting"
-          @submit="handlePublishArtworkSubmit"
       />
     </template>
   </FrontstagePageShell>
@@ -100,33 +68,21 @@
 import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import ImagePreview from '@/components/ImagePreview.vue'
-import PublishArtworkModal from '@/components/PublishArtworkModal.vue'
 import FrontstagePageShell from '@/components/layout/FrontstagePageShell.vue'
 import AssetImageTab from '@/views/asset/components/AssetImageTab.vue'
 import AssetVideoTab from '@/views/asset/components/AssetVideoTab.vue'
-import AssetCanvasTab from '@/views/asset/components/AssetCanvasTab.vue'
-import AssetEditorTab from '@/views/asset/components/AssetEditorTab.vue'
-import AssetStoryTab from '@/views/asset/components/AssetStoryTab.vue'
-import AssetAudioTab from '@/views/asset/components/AssetAudioTab.vue'
 import { useAssetImages } from '@/views/asset/composables/useAssetImages'
+import { useAssetVideos } from '@/views/asset/composables/useAssetVideos'
 import {
   tabs,
   imageFilterOptions,
   videoFilterOptions,
-  canvasFilterOptions,
-  editorFilterOptions,
-  storyFilterOptions,
-  audioFilterOptions,
 } from '@/views/asset/constants'
-import { applyAssetAction } from '@/api/asset-items'
+import { deleteAsset, downloadAsset } from '@/views/asset/api/assets'
 import { AUTH_LOGIN_SUCCESS_EVENT } from '@/stores/auth'
 import type {
-  AudioFilterType,
-  CanvasFilterType,
-  EditorFilterType,
   ImageFilterType,
   ImageItem,
-  StoryFilterType,
   TabType,
   VideoFilterType,
 } from '@/views/asset/types'
@@ -137,10 +93,6 @@ const activeTab = ref<TabType>('image')
 // 筛选状态
 const imageFilter = ref<ImageFilterType>('all')
 const videoFilter = ref<VideoFilterType>('all')
-const canvasFilter = ref<CanvasFilterType>('all')
-const editorFilter = ref<EditorFilterType>('all')
-const storyFilter = ref<StoryFilterType>('all')
-const audioFilter = ref<AudioFilterType>('music')
 
 // 批量操作模式状态
 const isBatchMode = ref<boolean>(false)
@@ -151,11 +103,12 @@ const selectedItems = ref<Set<string>>(new Set())
 // 图片预览状态
 const previewVisible = ref<boolean>(false)
 const previewIndex = ref<number>(0)
-const publishArtworkVisible = ref<boolean>(false)
-const publishSubmitting = ref<boolean>(false)
-const publishTargetImage = ref<ImageItem | null>(null)
+const previewItems = ref<ImageItem[]>([])
 
 const { imageGroups, allImages, loadImageAssets, resolvePreviewIndexByItemId } = useAssetImages()
+const { videoGroups, allVideos, loadVideoAssets, resolvePreviewIndexByItemId: resolveVideoPreviewIndexByItemId } = useAssetVideos()
+
+const activeItems = computed(() => activeTab.value === 'video' ? allVideos.value : allImages.value)
 
 // 选中数量计算属性
 const selectedCount = computed(() => selectedItems.value.size)
@@ -208,21 +161,28 @@ const handleAssetClick = (itemId: string) => {
 
 // 打开图片预览
 const openPreview = (itemId: string) => {
-  const index = resolvePreviewIndexByItemId(itemId)
+  const index = activeTab.value === 'video'
+    ? resolveVideoPreviewIndexByItemId(itemId)
+    : resolvePreviewIndexByItemId(itemId)
   if (index !== -1) {
+    previewItems.value = activeItems.value
     previewIndex.value = index
     previewVisible.value = true
   }
+}
+
+const loadAssets = async () => {
+  await Promise.all([loadImageAssets(), loadVideoAssets()])
 }
 
 // 登录成功后的页面数据刷新监听器。
 let authLoginSuccessListener: (() => void) | null = null
 
 onMounted(async () => {
-  await loadImageAssets()
+  await loadAssets()
 
   authLoginSuccessListener = () => {
-    void loadImageAssets()
+    void loadAssets()
   }
   window.addEventListener(AUTH_LOGIN_SUCCESS_EVENT, authLoginSuccessListener)
 })
@@ -248,63 +208,29 @@ const setVideoFilter = (filter: VideoFilterType) => {
   videoFilter.value = filter
 }
 
-const setCanvasFilter = (filter: CanvasFilterType) => {
-  canvasFilter.value = filter
-}
-
-const setEditorFilter = (filter: EditorFilterType) => {
-  editorFilter.value = filter
-}
-
-const setStoryFilter = (filter: StoryFilterType) => {
-  storyFilter.value = filter
-}
-
-const setAudioFilter = (filter: AudioFilterType) => {
-  audioFilter.value = filter
-}
-
 // 批量操作处理函数
 const handleBatchDelete = async () => {
   const itemIds = Array.from(selectedItems.value)
   if (!itemIds.length) return
 
-  await applyAssetAction('delete', itemIds)
-  await loadImageAssets()
+  const items = activeItems.value.filter(item => selectedItems.value.has(item.id) && item.taskType && item.taskId && item.url)
+  await Promise.all(items.map(item => deleteAsset({
+    task_type: item.taskType!,
+    task_id: item.taskId!,
+    asset_id: item.id,
+  })))
+  await loadAssets()
   exitBatchMode()
-  ElMessage.success(`已删除 ${itemIds.length} 项内容`)
+  ElMessage.success(`已删除 ${items.length} 项内容`)
 }
 
 const handleBatchDownload = async () => {
   const itemIds = Array.from(selectedItems.value)
   if (!itemIds.length) return
 
-  await applyAssetAction('download', itemIds)
-  ElMessage.success(`已记录 ${itemIds.length} 项下载`)
-}
-
-const handleBatchPublish = async () => {
-  const itemIds = Array.from(selectedItems.value)
-  if (!itemIds.length) return
-
-  await applyAssetAction('publish', itemIds)
-  await loadImageAssets()
-  ElMessage.success(`已提交 ${itemIds.length} 项内容，等待管理员审核`)
-}
-
-const handleBatchFavorite = async () => {
-  const itemIds = Array.from(selectedItems.value)
-  if (!itemIds.length) return
-
-  await applyAssetAction('favorite', itemIds)
-  ElMessage.success(`已收藏 ${itemIds.length} 项内容`)
-}
-
-const handleEditInCapCut = async () => {
-  const itemIds = Array.from(selectedItems.value)
-  console.log('去剪映编辑:', itemIds)
-  // TODO: 实现剪映编辑逻辑
-  ElMessage.info(`将在剪映中编辑 ${itemIds.length} 项内容`)
+  const items = activeItems.value.filter(item => selectedItems.value.has(item.id) && item.url)
+  await Promise.all(items.map(item => downloadAsset({ url: item.url!, filename: item.filename || item.id })))
+  ElMessage.success(`已下载 ${items.length} 项内容`)
 }
 
 // 监听标签页切换，退出批量操作模式
@@ -314,41 +240,8 @@ watch(activeTab, () => {
 
 // 图片预览事件处理
 const handlePreviewDownload = (image: ImageItem) => {
-  void applyAssetAction('download', [image.id]).then(() => {
-    ElMessage.success('已记录下载')
-  })
-}
-
-const handlePreviewFavorite = (image: ImageItem) => {
-  void applyAssetAction('favorite', [image.id]).then(() => {
-    ElMessage.success('已添加到收藏')
-  })
-}
-
-const handlePreviewPublish = (image: ImageItem) => {
-  publishTargetImage.value = image
-  publishArtworkVisible.value = true
-}
-
-// 单张发布走参考页弹窗，确认后再真正执行发布。
-const handlePublishArtworkSubmit = async ({
-                                            image,
-                                          }: {
-  image: ImageItem
-  title: string
-  description: string
-}) => {
-  publishSubmitting.value = true
-
-  try {
-    await applyAssetAction('publish', [image.id])
-    publishArtworkVisible.value = false
-    publishTargetImage.value = null
-    await loadImageAssets()
-    ElMessage.success('已提交审核，管理员通过后将公开展示')
-  } finally {
-    publishSubmitting.value = false
-  }
+  if (!image.url) return
+  void downloadAsset({ url: image.url, filename: image.filename || image.id }).then(() => ElMessage.success('下载完成'))
 }
 
 const handlePreviewGenerateVideo = (image: ImageItem) => {

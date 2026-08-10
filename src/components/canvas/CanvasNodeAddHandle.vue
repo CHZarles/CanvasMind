@@ -18,6 +18,7 @@ const props = defineProps<{
   /** Vue Flow handle id（默认 left/right，与原节点保持兼容） */
   handleId?: string
 }>()
+const emit = defineEmits<{ click: [side: 'left' | 'right'] }>()
 
 const position = computed(() => (props.side === 'left' ? Position.Left : Position.Right))
 const handleType = computed<'target' | 'source'>(() => (props.side === 'left' ? 'target' : 'source'))
@@ -31,6 +32,7 @@ const idValue = computed(() => props.handleId || props.side)
     :id="idValue"
     class="canvas-node-add-handle"
     :class="[`canvas-node-add-handle--${side}`, { 'is-visible': visible }]"
+    @click.stop="emit('click', side)"
   />
 </template>
 

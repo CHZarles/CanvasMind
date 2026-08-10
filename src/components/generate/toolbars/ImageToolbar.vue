@@ -5,7 +5,14 @@
 
 import { ref, computed, watch, onMounted } from 'vue'
 import SelectPopup from '../common/SelectPopup.vue'
-import { getAllImageModels, getDefaultImageModelKey, loadPublicModelCatalog, type ImageModel } from '@/config/models'
+import {
+  SEEDREAM_SIZE_OPTIONS,
+  SEEDREAM_4K_SIZE_OPTIONS,
+  getAllImageModels,
+  getDefaultImageModelKey,
+  loadPublicModelCatalog,
+  type ImageModel,
+} from '@/config/models'
 
 // 弹出方向类型
 type Placement = 'top' | 'bottom' | 'auto'
@@ -30,13 +37,10 @@ const modelVersions = computed(() =>
   getAllImageModels().map((m: any) => ({ value: m.key, label: m.label }))
 )
 
-// 尺寸配置
+// 后端 size 同时支持清晰度枚举（1K/2K/3K/4K）和自定义 WxH。
 const sizeOptions = [
-  { value: '1:1', label: '1:1', quality: '高清 2K' },
-  { value: '4:3', label: '4:3', quality: '高清 2K' },
-  { value: '3:4', label: '3:4', quality: '高清 2K' },
-  { value: '16:9', label: '16:9', quality: '高清 2K' },
-  { value: '9:16', label: '9:16', quality: '高清 2K' }
+  { value: 'auto', label: '智能比例' },
+  ...SEEDREAM_SIZE_OPTIONS.map(option => ({ value: option.label, label: option.label })),
 ]
 
 const readStoredImageToolbarState = () => {
@@ -65,6 +69,18 @@ const IMAGE_COUNT_DEFAULT = 1
 const currentModelVersion = ref(
   validImageModelValues.includes(storedToolbarState?.model) ? storedToolbarState.model : getDefaultImageModelKey(),
 )
+
+const currentImageModel = computed(() =>
+  getAllImageModels().find(item => item.key === currentModelVersion.value),
+)
+
+const resolutionOptions = computed(() => {
+  const values = currentImageModel.value?.sizes.filter(value => /^\d+K$/i.test(value)) || []
+  const fallback = String(currentImageModel.value?.defaultParams.size || '2K')
+  return [...new Set(values.length ? values : [fallback])]
+})
+
+const currentResolution = ref(String(storedToolbarState?.resolution || '2K'))
 
 // 当前选中的尺寸
 const currentSize = ref(
@@ -144,8 +160,22 @@ const currentModelLabel = computed(() => {
 
 // 获取当前尺寸配置
 const currentSizeConfig = () => {
-  return sizeOptions.find(s => s.value === currentSize.value) || sizeOptions[0]
+  const option = sizeOptions.find(s => s.value === currentSize.value) || sizeOptions[0]
+  return { ...option, quality: `高清 ${currentResolution.value}` }
 }
+
+const currentRequestSize = computed(() => {
+  if (currentSize.value === 'auto') return currentResolution.value
+  const exact = currentResolution.value === '4K'
+    ? SEEDREAM_4K_SIZE_OPTIONS.find(option => option.label === currentSize.value)?.key
+    : undefined
+  if (exact) return exact
+  const base = SEEDREAM_SIZE_OPTIONS.find(option => option.label === currentSize.value)?.key
+  const resolution = Number.parseInt(currentResolution.value, 10)
+  if (!base || !Number.isFinite(resolution)) return currentResolution.value
+  const scale = resolution / 2
+  return base.replace(/\d+/g, value => String(Math.round(Number(value) * scale / 8) * 8))
+})
 
 watch(
   modelVersions,
@@ -166,15 +196,26 @@ watch(currentImageMax, (max) => {
   }
 })
 
+watch(
+  resolutionOptions,
+  (options) => {
+    if (!currentImageModel.value) return
+    if (!options.includes(currentResolution.value)) {
+      currentResolution.value = options.includes('2K') ? '2K' : options[0]
+    }
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   void loadPublicModelCatalog()
 })
 
 watch(
-  [currentModelVersion, currentSize],
-  ([model, size]) => {
+  [currentModelVersion, currentSize, currentResolution],
+  ([model, size, resolution]) => {
     if (typeof window === 'undefined') return
-    window.localStorage.setItem(IMAGE_TOOLBAR_STORAGE_KEY, JSON.stringify({ model, size }))
+    window.localStorage.setItem(IMAGE_TOOLBAR_STORAGE_KEY, JSON.stringify({ model, size, resolution }))
   },
   { immediate: true },
 )
@@ -183,6 +224,8 @@ defineExpose({
   currentModelVersion,
   currentModelLabel,
   currentSize,
+  currentResolution,
+  currentRequestSize,
   currentSizeConfig,
   currentCount,
 })
@@ -279,6 +322,19 @@ defineExpose({
 
     <!-- 尺寸选择弹窗 -->
     <SelectPopup v-model:visible="isSizeSelectOpen" :trigger-ref="sizeTriggerRef" :placement="placement" title="图片尺寸">
+      <div class="image-size-section-title">清晰度</div>
+      <ul class="lv-select-popup-inner image-resolution-options">
+        <li v-for="resolution in resolutionOptions"
+            :key="resolution"
+            :class="['lv-select-option', { 'lv-select-option-wrapper-selected': currentResolution === resolution }]"
+            @click.stop="currentResolution = resolution">
+          <div class="select-option-label">
+            <div class="select-option-label-content"><span>{{ resolution }}</span></div>
+            <span v-if="currentResolution === resolution" class="select-option-check-icon">✓</span>
+          </div>
+        </li>
+      </ul>
+      <div class="image-size-section-title">比例</div>
       <ul class="lv-select-popup-inner">
         <li v-for="size in sizeOptions"
             :key="size.value"
@@ -287,7 +343,7 @@ defineExpose({
           <div class="select-option-label">
             <div class="select-option-label-content">
               <span>{{ size.label }}</span>
-              <span class="commercial-content-PR23Ed">{{ size.quality }}</span>
+              <span class="commercial-content-PR23Ed">{{ currentResolution }}</span>
             </div>
             <span v-if="currentSize === size.value" class="select-option-check-icon">
               <svg width="1em" height="1em" viewBox="0 0 24 24"
@@ -371,6 +427,17 @@ defineExpose({
 /* 样式已在 generate.css 中定义 */
 .image-toolbar {
   display: contents;
+}
+
+.image-size-section-title {
+  padding: 8px 12px 4px;
+  color: var(--text-tertiary, #888);
+  font-size: 11px;
+}
+
+.image-resolution-options {
+  border-bottom: 1px solid var(--stroke-tertiary, rgba(255, 255, 255, 0.1));
+  padding-bottom: 6px;
 }
 
 /* 生成数量步进器 */

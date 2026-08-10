@@ -11,7 +11,7 @@
  *   - 选中后下方浮出 CanvasPromptInput（图片模型 + 尺寸/质量/价格 chip）
  *   - 保留批量生图组叠卡能力
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVueFlow } from '@vue-flow/core'
 import {
   CopyDocument,
@@ -20,13 +20,7 @@ import {
   Picture,
   VideoCamera,
   PictureFilled,
-  Sunny,
   Upload as UploadIcon,
-  Aim,
-  EditPen,
-  Refresh,
-  MoreFilled,
-  Crop,
   ZoomIn,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -45,10 +39,14 @@ import {
   edges,
   type WorkflowImageNodeData,
 } from '../../composables/useWorkflowCanvas'
-import { uploadStorageFile } from '@/api/storage'
+import {
+  generateCanvasNode,
+  prepareImageNode,
+  uploadNodeMedia,
+} from '../../composables/useAgentRuntime'
+import { loadMediaPreview } from '../../api/agent'
 import { loadPublicModelCatalog } from '@/config/models'
-import { createGenerationTask, subscribeGenerationTaskEvents, resolveGenerationTaskModel } from '@/api/generation-tasks'
-import { appendImageReferencesToRequestBody } from '@/shared/image-generation-request'
+import type { CanvasMediaReference } from '../../composables/imageVersions'
 
 const props = defineProps<{
   id: string
@@ -64,15 +62,75 @@ const imageUrl = ref(props.data?.url || '')
 const isLoading = ref(!!props.data?.loading)
 const errorMsg = ref(props.data?.error || '')
 const fileInputRef = ref<HTMLInputElement | null>(null)
+let ownedPreviewUrl = ''
+const versionPreviewUrls = ref<Record<string, string>>({})
+const ownedVersionPreviewUrls = new Set<string>()
+let previewRequest = 0
+let versionPreviewRequest = 0
+
+const syncPreviewUrl = async (source: unknown) => {
+  const request = ++previewRequest
+  if (ownedPreviewUrl) {
+    URL.revokeObjectURL(ownedPreviewUrl)
+    ownedPreviewUrl = ''
+  }
+  const value = String(source || '')
+  if (!value) {
+    imageUrl.value = ''
+    return
+  }
+  if (/\/api\//i.test(value) && !/^(blob|data):/i.test(value)) imageUrl.value = ''
+  try {
+    const resolved = await loadMediaPreview(value)
+    if (request !== previewRequest) {
+      if (resolved !== value && resolved.startsWith('blob:')) URL.revokeObjectURL(resolved)
+      return
+    }
+    if (resolved !== value) ownedPreviewUrl = resolved
+    imageUrl.value = resolved
+  } catch {
+    if (request === previewRequest) imageUrl.value = ''
+  }
+}
 
 watch(
-  [() => props.data?.url, () => props.data?.loading, () => props.data?.error],
-  ([url, loading, error]) => {
-    if (url !== undefined) imageUrl.value = url
+  [() => props.data?.loading, () => props.data?.error],
+  ([loading, error]) => {
     if (loading !== undefined) isLoading.value = loading
     if (error !== undefined) errorMsg.value = error
   },
 )
+watch(() => props.data?.url, (url) => void syncPreviewUrl(url), { immediate: true })
+watch(() => props.data?.media_versions, async versions => {
+  const request = ++versionPreviewRequest
+  ownedVersionPreviewUrls.forEach(url => URL.revokeObjectURL(url))
+  ownedVersionPreviewUrls.clear()
+  versionPreviewUrls.value = {}
+  if (!Array.isArray(versions)) return
+  const resolved = await Promise.all(versions.map(async version => {
+    const source = String(version.url || '')
+    try {
+      const url = await loadMediaPreview(source)
+      return [version.id, url, url !== source && url.startsWith('blob:')] as const
+    } catch {
+      return [version.id, '', false] as const
+    }
+  }))
+  if (request !== versionPreviewRequest) {
+    resolved.forEach(([, url, owned]) => {
+      if (owned) URL.revokeObjectURL(url)
+    })
+    return
+  }
+  versionPreviewUrls.value = Object.fromEntries(resolved.map(([id, url]) => [id, url]))
+  resolved.forEach(([, url, owned]) => {
+    if (owned) ownedVersionPreviewUrls.add(url)
+  })
+}, { immediate: true })
+onBeforeUnmount(() => {
+  if (ownedPreviewUrl) URL.revokeObjectURL(ownedPreviewUrl)
+  ownedVersionPreviewUrls.forEach(url => URL.revokeObjectURL(url))
+})
 
 // 上游连线检测：当 target=本节点 的边存在时，节点处于"已连接参考图片"状态
 const hasUpstream = computed(() => edges.value.some((e) => e.target === props.id))
@@ -92,15 +150,9 @@ const handleFileChange = async (event: Event) => {
   try {
     isLoading.value = true
     updateNode(props.id, { loading: true })
-    const uploaded = await uploadStorageFile(file, 'asset')
-    if (uploaded) {
-      imageUrl.value = uploaded.publicUrl
-      updateNode(props.id, { url: uploaded.publicUrl, loading: false })
-      // 上传成功后：如果还没有下游节点，自动创建一个 ready-state 的下游 image 节点
-      autoCreateDownstreamImageNode()
-    } else {
-      throw new Error('upload returned empty')
-    }
+    await uploadNodeMedia(props.id, file)
+    imageUrl.value = URL.createObjectURL(file)
+    autoCreateDownstreamImageNode()
   } catch (err) {
     ElMessage.error('图片上传失败')
     updateNode(props.id, { loading: false, error: '上传失败' })
@@ -115,30 +167,38 @@ const handleFileChange = async (event: Event) => {
 // 已有下游节点？
 const hasDownstream = computed(() => edges.value.some((e) => e.source === props.id))
 
+const createAdjacentImageNode = (side: 'left' | 'right') => {
+  const node = nodes.value.find((item) => item.id === props.id)
+  if (!node) return
+  const siblings = edges.value.filter(edge => side === 'right' ? edge.source === props.id : edge.target === props.id)
+  const newId = addNode('image', {
+    x: node.position.x + (side === 'right' ? 480 : -480),
+    y: node.position.y + siblings.length * 320,
+  }, { label: 'Image' })
+  addEdge({
+    source: side === 'right' ? props.id : newId,
+    target: side === 'right' ? newId : props.id,
+    sourceHandle: 'right',
+    targetHandle: 'left',
+    type: 'imageOrder',
+    data: { imageOrder: side === 'left' ? siblings.length + 1 : 1 },
+  })
+  setTimeout(() => {
+    updateNodeInternals([newId])
+    const allNodes = getNodes.value
+    removeSelectedNodes(allNodes.filter((item) => item.selected))
+    const target = allNodes.find((item) => item.id === newId)
+    if (target) addSelectedNodes([target])
+  }, 100)
+}
+
 /**
  * 自动创建一个下游 image 节点 + 连线，让画布进入 img_5 状态：
  * 「左侧已上传图片节点 → 右侧 ready-state Image 节点 + 底部 PromptInput（自动带 "图片1" 缩略 chip）」
  */
 const autoCreateDownstreamImageNode = () => {
   if (hasDownstream.value) return
-  const node = nodes.value.find((n) => n.id === props.id)
-  if (!node) return
-  const newId = addNode('image', { x: node.position.x + 480, y: node.position.y }, { label: 'Image' })
-  addEdge({
-    source: props.id,
-    target: newId,
-    sourceHandle: 'right',
-    targetHandle: 'left',
-    type: 'imageOrder',
-    data: { imageOrder: 1 },
-  })
-  setTimeout(() => {
-    updateNodeInternals([newId])
-    const allNodes = getNodes.value
-    removeSelectedNodes(allNodes.filter((n) => n.selected))
-    const target = allNodes.find((n) => n.id === newId)
-    if (target) addSelectedNodes([target])
-  }, 100)
+  createAdjacentImageNode('right')
 }
 
 const handleDownload = async () => {
@@ -163,17 +223,40 @@ const handleDuplicate = () => {
   if (newId) setTimeout(() => updateNodeInternals([newId]), 50)
 }
 
-// 批量生图组：当 isBatchRoot 且子图数量 > 1 时显示叠卡 + 计数
+type ImageVersionItem = { id: string; url?: string; media_ref?: CanvasMediaReference }
+
+const imageVersions = computed<ImageVersionItem[]>(() => (
+  props.data?.media_versions?.length
+    ? props.data.media_versions
+    : props.data?.batchChildren || []
+))
+
+const activeImageId = computed(() => {
+  const mediaRef = props.data?.media_ref
+  return mediaRef && 'asset_id' in mediaRef
+    ? mediaRef.asset_id
+    : mediaRef?.attachment_id || props.data?.primaryImageId
+})
+
+// 多版本图片沿用节点已有的叠卡展示，不额外创建画布节点。
 const isBatchGroupVisible = computed(() =>
-  Boolean(props.data?.isBatchRoot && (props.data.batchChildren?.length ?? 0) > 1),
+  imageVersions.value.length > 1,
 )
-const batchChildCount = computed(() => props.data?.batchChildren?.length ?? 0)
+const batchChildCount = computed(() => imageVersions.value.length)
 const toggleBatchExpanded = () => {
   if (!isBatchGroupVisible.value) return
   updateNode(props.id, { batchExpanded: !props.data?.batchExpanded })
 }
 
-// 「尝试」菜单：图生图 / 图生视频 / 图片换背景 / 首帧图生视频
+const selectImageVersion = (version: ImageVersionItem) => {
+  updateNode(props.id, {
+    ...(version.media_ref ? { media_ref: version.media_ref } : {}),
+    url: String(version.url || ''),
+    primaryImageId: version.id,
+  })
+}
+
+// 「尝试」菜单：图生图 / 图生视频 / 首帧图生视频
 const requireImage = (): boolean => {
   if (imageUrl.value) return true
   ElMessage.info('请先上传图片，再使用该能力')
@@ -190,21 +273,17 @@ const handleImageToVideo = (role: 'first_frame_image' | 'input_reference' = 'inp
   if (!requireImage()) return
   const node = nodes.value.find((n) => n.id === props.id)
   if (!node) return
-  const newId = addNode('videoConfig', { x: node.position.x + 380, y: node.position.y })
+  const newId = addNode('video', { x: node.position.x + 480, y: node.position.y })
   addEdge({
     source: props.id,
     target: newId,
     sourceHandle: 'right',
     targetHandle: 'left',
     type: 'imageRole',
-    data: { imageRole: role },
+    data: { imageRole: role === 'first_frame_image' ? 'first_frame' : 'reference' },
   })
   setTimeout(() => updateNodeInternals([newId]), 50)
 }
-const handleChangeBackground = () => {
-  ElMessage.info('图片换背景接入中，敬请期待')
-}
-
 const hoverActions = computed<NodeToolbarAction[]>(() => {
   const list: NodeToolbarAction[] = [
     { id: 'duplicate', label: '复制', icon: CopyDocument, onClick: handleDuplicate },
@@ -219,153 +298,55 @@ const hoverActions = computed<NodeToolbarAction[]>(() => {
 const emptyMenuItems = [
   { id: 'i2i', label: '图生图', icon: Picture, onClick: handleImageToImage },
   { id: 'i2v', label: '图生视频', icon: VideoCamera, onClick: () => handleImageToVideo('input_reference') },
-  { id: 'bg', label: '图片换背景', icon: Sunny, onClick: handleChangeBackground },
   { id: 'first-frame', label: '首帧图生视频', icon: PictureFilled, onClick: () => handleImageToVideo('first_frame_image') },
 ]
 
-// 选中态下方浮层：用 ContentGenerator（与 /generate 同款），锁定 image 类型
 onMounted(() => {
   void loadPublicModelCatalog()
 })
-// 上游图片素材 → 作为图生图参考图（直接拿 url 数组）
-// 注意：上游图生图模型（如 gpt-image-2）只接受栅格格式，SVG/PDF/HEIC 等会让 PIL 在
-// BytesIO 解码时报 "cannot identify image file"，必须在客户端过滤掉。
+
 const RASTER_REFERENCE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'])
-const isRasterReferenceUrl = (url: string): boolean => {
-  if (!url) return false
-  // data url 直接放行
-  if (url.startsWith('data:image/')) return true
-  // 截掉 query/hash 再取扩展名
+const isRasterReferenceUrl = (url: string) => {
+  if (!url || url.startsWith('data:image/')) return Boolean(url)
   const cleanUrl = url.split('?')[0].split('#')[0]
   const dotIndex = cleanUrl.lastIndexOf('.')
-  if (dotIndex < 0) return true // 无扩展名时不强制拦截
-  const ext = cleanUrl.slice(dotIndex + 1).toLowerCase()
-  return RASTER_REFERENCE_EXTENSIONS.has(ext)
+  return dotIndex < 0 || RASTER_REFERENCE_EXTENSIONS.has(cleanUrl.slice(dotIndex + 1).toLowerCase())
 }
-const droppedNonRasterRefsHint = ref(false)
-const upstreamReferenceUrls = computed<string[]>(() => {
-  const refs: string[] = []
-  let droppedCount = 0
-  const upstreamEdges = edges.value.filter((e) => e.target === props.id)
-  for (const edge of upstreamEdges) {
-    const sourceNode = nodes.value.find((n) => n.id === edge.source)
-    if (!sourceNode) continue
-    if (sourceNode.type === 'image') {
-      const url = (sourceNode.data as { url?: string })?.url
-      if (!url) continue
-      if (isRasterReferenceUrl(url)) {
-        refs.push(url)
-      } else {
-        droppedCount += 1
-      }
-    }
-  }
-  if (droppedCount > 0 && !droppedNonRasterRefsHint.value) {
-    droppedNonRasterRefsHint.value = true
-    ElMessage.warning(`已忽略 ${droppedCount} 张非栅格格式（SVG 等）的参考图，图生图模型不支持`)
-    // 下一次重新出现时再次提示
-    setTimeout(() => { droppedNonRasterRefsHint.value = false }, 3000)
-  }
-  return refs
-})
+const upstreamReferenceUrls = computed(() => edges.value
+  .filter(edge => edge.target === props.id)
+  .map(edge => nodes.value.find(node => node.id === edge.source))
+  .filter(node => node?.type === 'image')
+  .map(node => String((node?.data as { url?: string })?.url || ''))
+  .filter(isRasterReferenceUrl))
 
 // 顶部悬浮工具栏（参照 RunningHUB .image-toolbar）：仅在选中 + 有图时显示
 const topToolbarItems = computed<NodeTopToolbarItem[]>(() => [
-  { id: 'panorama', label: '全景图', icon: Aim, hasDropdown: true, onClick: () => ElMessage.info('全景图：接入中') },
-  { id: 'hd', label: 'HD 增强', icon: PictureFilled, onClick: () => ElMessage.info('HD 增强：接入中') },
-  { id: 'edit-element', label: '编辑元素', icon: EditPen, onClick: () => ElMessage.info('编辑元素：接入中') },
-  { id: 'angle', label: '角度', icon: Refresh, onClick: () => ElMessage.info('角度：接入中') },
-  { id: 'light', label: '打光', icon: Sunny, onClick: () => ElMessage.info('打光：接入中') },
-  { id: 'more', label: '更多', icon: MoreFilled, onClick: () => ElMessage.info('更多：接入中') },
-  { type: 'divider' },
-  { id: 'crop', label: '裁剪', icon: Crop, iconOnly: true, onClick: () => ElMessage.info('裁剪：接入中') },
   { id: 'download-mini', label: '下载', icon: Download, iconOnly: true, onClick: handleDownload },
   { id: 'preview', label: '放大预览', icon: ZoomIn, iconOnly: true, onClick: () => imageUrl.value && window.open(imageUrl.value, '_blank') },
-  { type: 'divider' },
-  { id: 'agent', label: '加入 Agent', textMark: 'R', onClick: () => ElMessage.info('加入 Agent：接入中') },
 ])
 
 // ContentGenerator 发送：用上游图作为参考 + 用户 prompt 调图生图，结果回填到当前节点
 const isGenerating = ref(false)
-const taskStreamController = ref<AbortController | null>(null)
 const handlePromptSend = async (
   message: string,
   _type: string,
-  options?: { modelKey?: string; ratio?: string; resolution?: string; count?: number; referenceImages?: string[] },
+  options?: { modelKey?: string; ratio?: string; resolution?: string; size?: string; count?: number; referenceImages?: string[] },
 ) => {
   if (!message?.trim() || isGenerating.value) return
-  // 优先用 ContentGenerator 自带的参考图选项（用户在生成器内单独添加的）
-  // 没有时落到上游连线的图
-  const rawRefImages = Array.isArray(options?.referenceImages) && options.referenceImages.length
-    ? options.referenceImages
-    : upstreamReferenceUrls.value
-  // 再做一次栅格过滤，防止用户直接通过 ContentGenerator 上传 SVG/PDF 等
-  const refImages = rawRefImages.filter(isRasterReferenceUrl)
-  if (rawRefImages.length > refImages.length) {
-    ElMessage.warning('已忽略非栅格格式（SVG 等）的参考图，图生图模型不支持')
-  }
   isGenerating.value = true
-  taskStreamController.value?.abort()
   updateNode(props.id, { loading: true, error: '' })
   try {
-    const fallbackKey = String(options?.modelKey || '').trim() || ''
-    const { providerId, modelKey } = resolveGenerationTaskModel({
-      modelKey: fallbackKey,
-      fallbackModelKey: fallbackKey,
-      category: 'IMAGE',
-      missingModelMessage: '未匹配到有效图片模型，请先在后台配置模型',
+    prepareImageNode(props.id, message, {
+      count: options?.count,
+      model: options?.modelKey,
+      size: options?.size,
     })
-    const requestBody: Record<string, unknown> = {
-      model: modelKey,
-      prompt: message,
-      n: Math.max(1, Math.min(8, Number(options?.count) || 1)),
-      providerId,
-    }
-    if (options?.ratio) requestBody.size = options.ratio
-    if (options?.resolution) requestBody.quality = options.resolution
-    const hasRef = refImages.length > 0
-    const finalBody = hasRef ? appendImageReferencesToRequestBody(requestBody, refImages) : requestBody
-
-    const saved = await createGenerationTask({
-      source: 'workflow',
-      type: 'image',
-      requestMode: hasRef ? 'image-edit' : 'image-generation',
-      prompt: message,
-      modelKey,
-      ratio: options?.ratio,
-      resolution: options?.resolution,
-      referenceImages: hasRef ? [...refImages] : [],
-      requestBody: finalBody,
-    })
-    const taskId = String(saved?.id || '').trim()
-    if (!taskId) throw new Error('图片任务创建失败')
-
-    const controller = new AbortController()
-    taskStreamController.value = controller
-    await subscribeGenerationTaskEvents(taskId, {
-      signal: controller.signal,
-      onEvent: (event) => {
-        if (event.type === 'snapshot' || event.type === 'completed') {
-          const urls = Array.isArray(event.record?.images) ? event.record.images.filter(Boolean) : []
-          if (urls.length) {
-            updateNode(props.id, { url: urls[0], loading: false, error: '', executed: true, taskRecordId: taskId })
-            isGenerating.value = false
-          }
-        }
-        if (event.type === 'failed') {
-          updateNode(props.id, { loading: false, error: String(event.message || event.record?.error || '图片生成失败') })
-          isGenerating.value = false
-        }
-        if (event.type === 'stopped') {
-          updateNode(props.id, { loading: false, error: '任务已停止' })
-          isGenerating.value = false
-        }
-      },
-    })
+    await generateCanvasNode(props.id, 'image')
   } catch (err: unknown) {
     console.error('[ImageNode] generation failed', err)
     const msg = err instanceof Error ? err.message : '图片生成失败'
     updateNode(props.id, { loading: false, error: msg })
+  } finally {
     isGenerating.value = false
   }
 }
@@ -465,22 +446,22 @@ const handlePromptSend = async (
           <span class="image-node-replace-icon" aria-hidden="true">↑</span>
           <span>替换</span>
         </button>
-        <span v-if="isBatchGroupVisible" class="image-node-batch-count" :title="`批量组 ${batchChildCount} 张，双击展开/折叠`">
+        <span v-if="isBatchGroupVisible" class="image-node-batch-count" :title="`${batchChildCount} 个版本，双击展开/折叠`">
           {{ batchChildCount }}
         </span>
         <div v-if="isBatchGroupVisible && data?.batchExpanded" class="image-node-batch-grid">
           <div
-            v-for="child in data?.batchChildren"
+            v-for="child in imageVersions"
             :key="child.id"
             class="image-node-batch-grid__item"
-            :class="{ 'is-primary': child.id === data?.primaryImageId }"
+            :class="{ 'is-primary': child.id === activeImageId }"
             @click.stop
           >
-            <img :src="child.url" alt="批量子图" />
+            <img :src="versionPreviewUrls[child.id] || child.url" :alt="`图片版本 ${child.id}`" />
             <button
               class="image-node-batch-set-primary"
-              title="设为主图"
-              @click.stop="updateNode(id, { primaryImageId: child.id, url: child.url })"
+              title="切换到这个版本"
+              @click.stop="selectImageVersion(child)"
             >
               ★
             </button>
@@ -497,17 +478,16 @@ const handlePromptSend = async (
       />
     </div>
 
-    <CanvasNodeAddHandle side="left" :visible="isSelected" />
-    <CanvasNodeAddHandle side="right" :visible="isSelected" />
+    <CanvasNodeAddHandle side="left" :visible="isSelected" @click="createAdjacentImageNode" />
+    <CanvasNodeAddHandle side="right" :visible="isSelected" @click="createAdjacentImageNode" />
 
     <CanvasNodeHoverToolbar :visible="showActions" :actions="hoverActions" />
 
     <!-- 选中态顶部悬浮工具栏（仅有图时显示） -->
     <CanvasNodeTopToolbar :visible="isSelected && showImage" :items="topToolbarItems" />
 
-    <!-- 选中态下方浮出 prompt：仅 ready-state（有上游连线 + 自身空）时显示
-         自身有图 / 空态菜单 时不显示，符合 RunningHUB 设计 -->
-    <div v-if="isSelected && showReady" class="image-node-prompt-panel nodrag nopan" @mousedown.stop>
+    <!-- 选中态下方浮出 prompt：节点只要不是生成中/报错，都可编辑自己的输入并生成或重生成。 -->
+    <div v-if="isSelected && !showLoading && !showError" class="image-node-prompt-panel nodrag nopan" @mousedown.stop>
       <ContentGenerator
         layout="sidebar"
         :collapsible="false"

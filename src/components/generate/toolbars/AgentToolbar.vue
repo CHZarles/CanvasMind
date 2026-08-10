@@ -221,6 +221,8 @@ watch(
     if (!values.length) return
     if (!values.includes(currentModel.value)) {
       currentModel.value = props.defaultModelKey || getAgentModel() || getDefaultChatModelKey() || values[0]
+      if (!values.includes(currentModel.value)) currentModel.value = getDefaultChatModelKey() || values[0]
+      setAgentModel(currentModel.value)
     }
   },
   { immediate: true },
@@ -228,18 +230,20 @@ watch(
 
 onMounted(() => {
   void loadPublicModelCatalog()
-  void loadPublicSkillCatalog().then(() => {
-    skillOptions.value = listEnabledAgentSkills()
-    const allowedSkillKeys = Array.isArray(props.allowedAssistantKeys) && props.allowedAssistantKeys.length
-      ? props.allowedAssistantKeys.map(item => String(item || '').trim()).filter(Boolean)
-      : []
-    const filteredSkills = allowedSkillKeys.length
-      ? skillOptions.value.filter(item => allowedSkillKeys.includes(item.value))
-      : skillOptions.value
-    if (!filteredSkills.some(item => item.value === currentSkill.value)) {
-      currentSkill.value = props.defaultAssistantKey || filteredSkills[0]?.value || 'general'
-    }
-  })
+  if (props.showAssistantSelector) {
+    void loadPublicSkillCatalog().then(() => {
+      skillOptions.value = listEnabledAgentSkills()
+      const allowedSkillKeys = Array.isArray(props.allowedAssistantKeys) && props.allowedAssistantKeys.length
+        ? props.allowedAssistantKeys.map(item => String(item || '').trim()).filter(Boolean)
+        : []
+      const filteredSkills = allowedSkillKeys.length
+        ? skillOptions.value.filter(item => allowedSkillKeys.includes(item.value))
+        : skillOptions.value
+      if (!filteredSkills.some(item => item.value === currentSkill.value)) {
+        currentSkill.value = props.defaultAssistantKey || filteredSkills[0]?.value || 'general'
+      }
+    })
+  }
 })
 
 watch(

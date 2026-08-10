@@ -19,6 +19,11 @@ const SKIP_FILES = new Set([
   'test-research-task.mjs',
 ])
 
+/** 需要真实 AdFlow Bearer token；无 token 时保留其它回归测试可运行 */
+const AUTH_FILES = new Set([
+  'test-workflow-canvas-sync.mjs',
+])
+
 const runScript = (filePath) => new Promise((resolve, reject) => {
   const child = spawn('npx', ['tsx', filePath], {
     cwd: rootDir,
@@ -43,7 +48,13 @@ const main = async () => {
   const files = (await readdir(__dirname))
     .filter((name) => name.startsWith('test-') && name.endsWith('.mjs'))
     .filter((name) => !SKIP_FILES.has(name))
+    .filter((name) => process.env.ADFLOW_AUTH_TOKEN || !AUTH_FILES.has(name))
     .sort()
+
+  const skippedAuthFiles = [...AUTH_FILES].filter((name) => !process.env.ADFLOW_AUTH_TOKEN)
+  if (skippedAuthFiles.length) {
+    console.log(`[test:scripts] 未设置 ADFLOW_AUTH_TOKEN，跳过认证联调：${skippedAuthFiles.join(', ')}`)
+  }
 
   if (files.length === 0) {
     console.log('[test:scripts] 未找到可运行的测试脚本')

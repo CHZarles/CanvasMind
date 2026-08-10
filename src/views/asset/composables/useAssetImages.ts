@@ -1,6 +1,5 @@
-import { computed, ref } from 'vue'
-import { listAssetItems, type PersistedAssetItem } from '@/api/asset-items'
-import { buildAssetUrl } from '@/api/http'
+import { computed, onScopeDispose, ref } from 'vue'
+import { fetchAssetBlob, listAssetMedia, type AssetMedia } from '@/views/asset/api/assets'
 import type { ImageGroup, ImageItem } from '@/views/asset/types'
 
 const formatGroupDate = (value: string | Date) => {
@@ -26,55 +25,49 @@ const buildImageGroups = (items: Array<ImageItem & { createdAt?: string }>) => {
   }))
 }
 
-const getAssetResolutionLabel = (item: PersistedAssetItem) => {
-  const sourceMeta = (item.sourceMeta || {}) as Record<string, unknown>
-  const explicitLabel = sourceMeta.resolutionLabel
-  if (typeof explicitLabel === 'string' && explicitLabel.trim() !== '') {
-    return explicitLabel
-  }
-
-  const width = item.width || 0
-  const height = item.height || 0
-  const maxSide = Math.max(width, height)
-
-  if (maxSide >= 3840) return '4K'
-  if (maxSide >= 2048) return '2K'
-  if (maxSide >= 1280) return '高清'
-  return '标清'
-}
-
-const buildImageGroupsFromAssets = (items: PersistedAssetItem[]) => buildImageGroups(
-  items.map(item => ({
-    id: item.id,
-    src: buildAssetUrl(item.previewUrl || item.fileUrl),
-    promptText: item.promptText,
-    modelLabel: item.modelLabel || '图片 4.0',
-    aspectRatioLabel: item.aspectRatio || '1:1',
-    resolutionLabel: getAssetResolutionLabel(item),
-    createDate: item.createdAt,
-    createdAt: item.createdAt,
-  })),
-)
-
 export const useAssetImages = () => {
   const imageGroups = ref<ImageGroup[]>([])
+  const objectUrls = new Set<string>()
 
   const allImages = computed(() => imageGroups.value.flatMap(group => group.images))
 
   const loadImageAssets = async () => {
     try {
-      const assets = await listAssetItems({
-        scope: 'mine',
-        assetType: 'image',
-        take: 120,
-      })
+      const page = await listAssetMedia()
+      const images = await Promise.all(page.items
+        .filter(item => item.content_type.startsWith('image/'))
+        .map(async (item: AssetMedia) => {
+          try {
+            const src = URL.createObjectURL(await fetchAssetBlob(item.url))
+            objectUrls.add(src)
+            return {
+              id: item.asset_id,
+              src,
+              taskType: item.task_type,
+              taskId: item.task_id,
+              url: item.url,
+              filename: item.filename,
+              contentType: item.content_type,
+              promptText: item.prompt || '',
+              modelLabel: item.task_type,
+              createDate: item.created_at,
+              createdAt: item.created_at,
+            }
+          } catch {
+            return null
+          }
+        }))
 
-      imageGroups.value = assets.length ? buildImageGroupsFromAssets(assets) : []
+      imageGroups.value = buildImageGroups(images.filter(item => item !== null))
     } catch (error) {
       console.warn('读取资产列表失败。', error)
       imageGroups.value = []
     }
   }
+
+  onScopeDispose(() => {
+    objectUrls.forEach(URL.revokeObjectURL)
+  })
 
   const resolvePreviewIndexByItemId = (itemId: string) => {
     return allImages.value.findIndex(img => img.id === itemId)

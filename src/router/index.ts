@@ -1,19 +1,13 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
-import { useSystemInitStore } from '../stores/system-init'
 import { useLoadingStore } from '../stores/loading'
 
 // 核心页面懒加载，避免全部进入主 bundle 拖慢首屏
 const Home = () => import('../views/home/home.vue')
-const Generate = () => import('../views/generate/generate.vue')
-const Canana = () => import('../views/canana/canana.vue')
 const AccountManagement = () => import('../views/account/AccountManagement.vue')
-const PublishCenter = () => import('../views/publish/PublishCenter.vue')
 const AssetManagement = () => import('../views/asset/AssetManagement.vue')
 const Workflow = () => import('../views/workflow/index.vue')
 const Install = () => import('../views/install/InstallView.vue')
 const PolicyDetail = () => import('../views/policies/PolicyDetail.vue')
-const AgenticAssetsCanvasView = () => import('../views/agentic-assets-canvas/AgenticAssetsCanvasView.vue')
 const AdminLayout = () => import('../components/admin/layout/AdminLayout.vue')
 const AdminDashboard = () => import('../views/admin/dashboard/AdminDashboard.vue')
 const AdminAssets = () => import('../views/admin/assets/AdminAssets.vue')
@@ -49,13 +43,11 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/generate',
-    name: 'Generate',
-    component: Generate,
+    redirect: '/workflow',
   },
   {
     path: '/canvas',
-    name: 'Canvas',
-    component: Canana,
+    redirect: '/workflow',
   },
   {
     path: '/account',
@@ -64,11 +56,6 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
     },
-  },
-  {
-    path: '/publish',
-    name: 'PublishCenter',
-    component: PublishCenter,
   },
   {
     path: '/asset',
@@ -82,8 +69,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/agentic-assets-canvas',
-    name: 'AgenticAssetsCanvas',
-    component: AgenticAssetsCanvasView,
+    redirect: '/workflow',
   },
   {
     path: '/policies/:type',
@@ -285,59 +271,8 @@ const router = createRouter({
   routes,
 })
 
-// 对需要登录的页面做统一拦截，未登录时回到首页显示登录入口。
-router.beforeEach(async (to) => {
-  // 路由切换开启全局进度条
+router.beforeEach(() => {
   useLoadingStore().start('route')
-
-  const systemInitStore = useSystemInitStore()
-  if (!systemInitStore.systemInitInitialized.value || systemInitStore.systemInitLoading.value) {
-    await systemInitStore.loadStatus()
-  }
-
-  if (!systemInitStore.isInitialized.value && to.path !== '/install') {
-    return {
-      path: '/install',
-      query: to.fullPath && to.fullPath !== '/install'
-        ? { redirect: to.fullPath }
-        : undefined,
-    }
-  }
-
-  if (systemInitStore.isInitialized.value && to.path === '/install') {
-    return {
-      path: '/',
-    }
-  }
-
-  if (!to.meta?.requiresAuth) {
-    return true
-  }
-
-  const authStore = useAuthStore()
-  if (!authStore.sessionInitialized.value && !authStore.sessionLoading.value) {
-    await authStore.loadSession()
-  }
-
-  if (authStore.sessionLoading.value) {
-    await authStore.loadSession()
-  }
-
-  if (!authStore.isLoggedIn.value) {
-    return {
-      path: '/',
-      query: {
-        login: '1',
-      },
-    }
-  }
-
-  if (to.meta?.requiresAdmin && !authStore.isAdmin.value) {
-    return {
-      path: '/admin-forbidden',
-    }
-  }
-
   return true
 })
 

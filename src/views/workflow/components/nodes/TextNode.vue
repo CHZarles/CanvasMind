@@ -20,10 +20,7 @@ import {
   Minus,
   EditPen,
   Upload,
-  MagicStick,
   Document,
-  FullScreen,
-  Grid,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import CanvasNodeHoverToolbar, { type NodeToolbarAction } from '@/components/canvas/CanvasNodeHoverToolbar.vue'
@@ -42,7 +39,7 @@ import {
   type WorkflowTextNodeData,
 } from '../../composables/useWorkflowCanvas'
 import { getAllChatModels, getDefaultChatModelKey, loadPublicModelCatalog } from '@/config/models'
-import { streamChatCompletions } from '../../api/chat'
+import { runAgentText } from '../../composables/useAgentRuntime'
 
 const props = defineProps<{
   id: string
@@ -139,10 +136,10 @@ const handleFileChange = async (event: Event) => {
 }
 
 // 快捷创建文生图配置节点
-const createImageConfig = () => {
+const createImageNode = () => {
   const node = nodes.value.find((n) => n.id === props.id)
   if (!node) return
-  const newId = addNode('imageConfig', { x: node.position.x + 380, y: node.position.y })
+  const newId = addNode('image', { x: node.position.x + 380, y: node.position.y })
   addEdge({
     source: props.id,
     target: newId,
@@ -155,10 +152,10 @@ const createImageConfig = () => {
 }
 
 // 快捷创建视频配置节点
-const createVideoConfig = () => {
+const createVideoNode = () => {
   const node = nodes.value.find((n) => n.id === props.id)
   if (!node) return
-  const newId = addNode('videoConfig', { x: node.position.x + 380, y: node.position.y })
+  const newId = addNode('video', { x: node.position.x + 380, y: node.position.y })
   addEdge({
     source: props.id,
     target: newId,
@@ -170,26 +167,20 @@ const createVideoConfig = () => {
   setTimeout(() => updateNodeInternals([newId]), 50)
 }
 
-// 空态菜单：图片反推提示词（占位，等接 ai-gateway 的 reverse-prompt 能力）
-const handleReversePrompt = () => {
-  ElMessage.info('图片反推提示词接入中，敬请期待')
-}
-
 // hover 工具栏配置
 const hoverActions = computed<NodeToolbarAction[]>(() => [
   { id: 'font-minus', label: '缩小字号', icon: Minus, disabled: fontSize.value <= FONT_SIZE_MIN, onClick: () => handleFontSizeChange(-1) },
   { id: 'font-plus', label: '放大字号', icon: Plus, disabled: fontSize.value >= FONT_SIZE_MAX, onClick: () => handleFontSizeChange(1) },
   { id: 'duplicate', label: '复制', icon: CopyDocument, onClick: handleDuplicate },
-  { id: 'image-config', label: '生图', icon: Picture, onClick: createImageConfig },
-  { id: 'video-config', label: '生视频', icon: VideoCamera, onClick: createVideoConfig },
+  { id: 'image', label: '生图', icon: Picture, onClick: createImageNode },
+  { id: 'video', label: '生视频', icon: VideoCamera, onClick: createVideoNode },
   { id: 'delete', label: '删除', icon: Delete, danger: true, onClick: handleDelete },
 ])
 
 const emptyMenuItems = [
   { id: 'start-edit', label: '自己编写内容', icon: EditPen, onClick: handleStartEdit },
   { id: 'import-file', label: '上传文档解析文本', icon: Upload, onClick: handleImportFile },
-  { id: 'create-video', label: '文字生视频', icon: VideoCamera, onClick: createVideoConfig },
-  { id: 'reverse-prompt', label: '图片反推提示词', icon: MagicStick, onClick: handleReversePrompt },
+  { id: 'create-video', label: '文字生视频', icon: VideoCamera, onClick: createVideoNode },
 ]
 
 // 富文本工具栏（参照 RunningHUB .format-toolbar）：仅 selected + 有内容时显示
@@ -225,9 +216,6 @@ const handleCopyText = async () => {
     ElMessage.warning('复制失败，请手动选择')
   }
 }
-const handleFullScreen = () => ElMessage.info('全屏编辑：接入中')
-const handleTablePicker = () => ElMessage.info('插入表格：接入中')
-
 const topToolbarItems = computed<NodeTopToolbarItem[]>(() => [
   { id: 'bold', label: '粗体', textMark: 'B', onClick: () => applyMarkdownWrap('**') },
   { id: 'italic', label: '斜体', textMark: 'I', onClick: () => applyMarkdownWrap('*') },
@@ -237,10 +225,7 @@ const topToolbarItems = computed<NodeTopToolbarItem[]>(() => [
   { id: 'h2', label: '标题 2', textMark: 'H₂', onClick: () => applyLinePrefix('## ') },
   { id: 'h3', label: '标题 3', textMark: 'H₃', onClick: () => applyLinePrefix('### ') },
   { type: 'divider' },
-  { id: 'paragraph', label: '自动排版', textMark: '¶', onClick: () => ElMessage.info('自动排版：接入中') },
   { id: 'copy-text', label: '复制', icon: CopyDocument, iconOnly: true, onClick: handleCopyText },
-  { id: 'fullscreen', label: '全屏', icon: FullScreen, iconOnly: true, onClick: handleFullScreen },
-  { id: 'table', label: '插入表格', icon: Grid, iconOnly: true, onClick: handleTablePicker },
 ])
 
 // 选中态下方浮层 prompt：仅在节点被选中时显示
@@ -249,9 +234,13 @@ const promptText = ref('')
  * 节点下方 PromptInput 发送 = AI 润色：
  *   - 节点 content 有内容 → 把 content 作为「原文」+ PromptInput 文本作为「润色诉求」一起送给 AI
  *   - 节点 content 为空 → 直接把 PromptInput 文本送给 AI 生成润色版作为初始内容
- * 流式写回 content。底层 workflow streamChatCompletions 已通过 createGenerationTask 持久化。
+ * 通过当前画布会话的 Agent Runtime 生成并写回 content。
  */
-const handlePromptSend = async (text: string, _type: CreationType, _options?: unknown) => {
+const handlePromptSend = async (
+  text: string,
+  _type: CreationType,
+  options?: { modelKey?: string },
+) => {
   if (!text.trim() || isPolishing.value) return
   const original = content.value
   isPolishing.value = true
@@ -261,21 +250,16 @@ const handlePromptSend = async (text: string, _type: CreationType, _options?: un
     ? `请基于以下原文进行润色，融入新的诉求：\n\n【原文】\n${original}\n\n【润色诉求】\n${text}`
     : text
   try {
-    let result = ''
-    for await (const chunk of streamChatCompletions({
-      model: polishModel.value,
-      messages: [
-        {
-          role: 'system',
-          content:
-            '你是一个专业的 AI 创作提示词与文本润色专家。将用户输入润色为高质量的内容，保留原意但融入更生动的细节、画面感与情绪。直接返回润色后的纯文本，不要解释。',
-        },
-        { role: 'user', content: userMsg },
-      ],
-    })) {
-      result += chunk
-      content.value = result // 流式边写边显示
+    const selectedModel = String(options?.modelKey || polishModel.value || '').trim()
+    if (selectedModel) {
+      polishModel.value = selectedModel
+      updateNode(props.id, { polishModel: selectedModel })
     }
+    const result = await runAgentText([
+      '你是一个专业的 AI 创作提示词与文本润色专家。将用户输入润色为高质量的内容，保留原意但融入更生动的细节、画面感与情绪。直接返回润色后的纯文本，不要解释。',
+      userMsg,
+    ].join('\n\n'), selectedModel)
+    content.value = result
     if (result) {
       updateNode(props.id, { content: result })
     } else {

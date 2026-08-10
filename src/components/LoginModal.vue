@@ -306,6 +306,10 @@ const isTargetValid = computed(() => {
     return /^[a-zA-Z][a-zA-Z0-9_-]{3,31}$/.test(targetValue.value.trim())
   }
 
+  if (currentPrimaryMethod.value.methodType === 'EMAIL_PASSWORD') {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetValue.value.trim())
+  }
+
   if (currentPrimaryMethod.value.methodType === 'PHONE_CODE') {
     return /^1\d{10}$/.test(targetValue.value.trim())
   }

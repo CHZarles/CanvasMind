@@ -39,35 +39,6 @@
                       <span class="text-5vo">下载</span>
                     </div>
                   </button>
-                  <button class="btn-7n1 btn-secondary-y4e btn-rec btn-3qb" type="button" :disabled="selectedCount === 0" @click="emit('batch-publish')">
-                    <div class="button-flt">
-                      <svg width="1em" height="1em" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg" class="actionIcon">
-                        <g>
-                          <path data-follow-fill="currentColor" d="M17.523 8.332a1 1 0 0 1-1.415 0L13 5.223v9.357a1 1 0 1 1-2 0V5.223L7.892 8.332a1 1 0 1 1-1.415-1.415l4.816-4.815a1 1 0 0 1 1.414 0l4.816 4.816a1 1 0 0 1 0 1.414ZM4.439 14.58a1 1 0 1 0-2 0v2.35a4 4 0 0 0 4 4h11.122a4 4 0 0 0 4-4v-2.35a1 1 0 0 0-2 0v2.35a2 2 0 0 1-2 2H6.439a2 2 0 0 1-2-2v-2.35Z" clip-rule="evenodd" fill-rule="evenodd" fill="currentColor" />
-                        </g>
-                      </svg>
-                      <span class="text-5vo">提交审核</span>
-                    </div>
-                  </button>
-                  <button class="btn-7n1 btn-secondary-y4e btn-rec btn-3qb" type="button" :disabled="selectedCount === 0" @click="emit('batch-favorite')">
-                    <div class="button-flt">
-                      <svg width="16" height="16" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg" class="actionIcon">
-                        <g>
-                          <path data-follow-fill="currentColor" d="M9.893 7.177 12 3.787l2.107 3.39a3 3 0 0 0 1.829 1.329l3.874.956-2.572 3.052a3 3 0 0 0-.698 2.15l.287 3.98-3.697-1.503a3 3 0 0 0-2.26 0l-3.697 1.503.287-3.98a3 3 0 0 0-.698-2.15L4.19 9.462l3.874-.956a3 3 0 0 0 1.829-1.329Zm1.258-5.811a1 1 0 0 1 1.698 0l2.957 4.755a1 1 0 0 0 .61.443l5.435 1.342a1 1 0 0 1 .525 1.616l-3.609 4.28a1 1 0 0 0-.232.717l.403 5.585a1 1 0 0 1-1.374.998l-5.187-2.109a1 1 0 0 0-.754 0l-5.187 2.11a1 1 0 0 1-1.374-.999l.404-5.585a1 1 0 0 0-.233-.716l-3.61-4.281a1 1 0 0 1 .526-1.616l5.436-1.342a1 1 0 0 0 .61-.443l2.956-4.755Z" clip-rule="evenodd" fill-rule="evenodd" fill="currentColor" />
-                        </g>
-                      </svg>
-                      <span class="text-5vo">收藏</span>
-                    </div>
-                  </button>
-                  <button class="btn-7n1 btn-secondary-y4e btn-rec btn-3qb" type="button" :disabled="selectedCount === 0" @click="emit('edit-in-capcut')">
-                    <div class="btn-bm4">
-                      <svg width="1em" height="1em" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg" class="capcut-icon">
-                        <g>
-                          <path data-follow-fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M22.002 7.646V4.61l-3.749 1.917v-.115c0-1.21-.892-1.94-2.181-1.94H4.183c-1.36 0-2.181.73-2.181 1.94v3.066l5.252 2.642-5.252 2.67v3.059c0 1.186.825 1.917 2.181 1.917H16.07c1.29 0 2.182-.73 2.182-1.917v-.16L22 19.63v-3.081l-8.72-4.429 8.722-4.474Zm-11.747 5.98 6.448 3.287H3.784l6.47-3.286Zm6.4-6.3-6.4 3.265-6.47-3.265h12.87Z" fill="currentColor" />
-                        </g>
-                      </svg>去剪映编辑
-                    </div>
-                  </button>
                   <div class="divider-4o4"></div>
                   <div class="select-rfs" @click="emit('exit-batch-mode')">
                     <svg width="14" height="14" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg">
@@ -118,13 +89,6 @@
                     <div class="divider-hb7"></div>
                     <div class="btn-g4h" @click="emit('enter-batch-mode')">批量操作</div>
                     <div class="divider-hb7"></div>
-                    <div class="edit-in-capcut-54s">
-                      <svg width="1em" height="1em" viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" fill="none" role="presentation" xmlns="http://www.w3.org/2000/svg" class="capcut-icon">
-                        <g>
-                          <path data-follow-fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M22.002 7.646V4.61l-3.749 1.917v-.115c0-1.21-.892-1.94-2.181-1.94H4.183c-1.36 0-2.181.73-2.181 1.94v3.066l5.252 2.642-5.252 2.67v3.059c0 1.186.825 1.917 2.181 1.917H16.07c1.29 0 2.182-.73 2.182-1.917v-.16L22 19.63v-3.081l-8.72-4.429 8.722-4.474Zm-11.747 5.98 6.448 3.287H3.784l6.47-3.286Zm6.4-6.3-6.4 3.265-6.47-3.265h12.87Z" fill="currentColor" />
-                        </g>
-                      </svg>去剪映编辑
-                    </div>
                   </div>
                 </div>
               </div>
@@ -200,9 +164,6 @@ const emit = defineEmits<{
   'set-image-filter': [filter: ImageFilterType]
   'batch-delete': []
   'batch-download': []
-  'batch-publish': []
-  'batch-favorite': []
-  'edit-in-capcut': []
   'enter-batch-mode': []
   'exit-batch-mode': []
   'asset-click': [itemId: string]

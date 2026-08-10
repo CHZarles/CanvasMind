@@ -1,11 +1,7 @@
-export type TabType = 'image' | 'video' | 'canvas' | 'editor' | 'story' | 'audio'
+export type TabType = 'image' | 'video'
 
-export type ImageFilterType = 'all' | 'hd' | 'favorite'
-export type VideoFilterType = 'all' | 'favorite'
-export type CanvasFilterType = 'all'
-export type EditorFilterType = 'all' | 'favorite'
-export type StoryFilterType = 'all' | 'favorite'
-export type AudioFilterType = 'all' | 'voice' | 'song' | 'music' | 'favorite'
+export type ImageFilterType = 'all' | 'hd'
+export type VideoFilterType = 'all'
 
 export interface FilterOption<T extends string> {
   value: T
@@ -16,6 +12,11 @@ export interface FilterOption<T extends string> {
 export interface ImageItem {
   id: string
   src: string
+  taskType?: string
+  taskId?: string
+  url?: string
+  filename?: string
+  contentType?: string
   promptText?: string
   modelLabel?: string
   aspectRatioLabel?: string

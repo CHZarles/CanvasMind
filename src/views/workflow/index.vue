@@ -10,28 +10,25 @@ import { VueFlow, useVueFlow, SelectionMode, type Connection, type NodeMouseEven
 import { Background } from '@vue-flow/background'
 import { useAsyncAction, useShortcut } from '@/composables'
 import { useLoadingStore } from '@/stores/loading'
+import { AUTH_LOGIN_SUCCESS_EVENT, useAuthStore } from '@/stores/auth'
+import { useLoginModalStore } from '@/stores/login-modal'
 import {
   nodes, edges, addNode, addEdge, updateNode, applyCanvasSnapshot,
   canvasViewport, updateViewport,
   undo, redo, canUndo, canRedo, manualSaveHistory, initSampleData, initHistory,
   pauseHistory, resumeHistory,
   type WorkflowAddEdgeParams,
-  type WorkflowCanvasEdge,
   type WorkflowNodeType,
 } from './composables/useWorkflowCanvas'
-import { WORKFLOW_TEMPLATES } from './config/workflows'
-import { useWorkflowPersistence } from './composables/useWorkflowPersistence'
+import { activeAgentCanvasRevision, useWorkflowPersistence } from './composables/useWorkflowPersistence'
 import type { WorkflowDefinitionSummary } from './api/definitions'
-import { updateWorkflowDefinition } from './api/definitions'
-import type { WorkflowCanvasPosition } from './composables/workflow-orchestrator-types'
+import AgentPanel from './components/AgentPanel.vue'
+import { assetUrl, type AgentAsset } from './api/agent'
 
 // 节点组件
 import TextNode from './components/nodes/TextNode.vue'
-import ImageConfigNode from './components/nodes/ImageConfigNode.vue'
 import ImageNode from './components/nodes/ImageNode.vue'
-import VideoConfigNode from './components/nodes/VideoConfigNode.vue'
 import VideoNode from './components/nodes/VideoNode.vue'
-import LlmConfigNode from './components/nodes/LlmConfigNode.vue'
 
 // 边组件
 import ImageRoleEdge from './components/edges/ImageRoleEdge.vue'
@@ -44,8 +41,6 @@ import CanvasContextMenu from '@/components/canvas/CanvasContextMenu.vue'
 import CanvasZoomControls from '@/components/canvas/CanvasZoomControls.vue'
 import CanvasMiniMap from '@/components/canvas/CanvasMiniMap.vue'
 import CanvasConnectionLine from '@/components/canvas/CanvasConnectionLine.vue'
-import RightPanel from '@components/canana/RightPanel.vue'
-import { useChatSessions } from '@/composables/useChatSessions'
 import { useCanvasSelection } from '@/composables/useCanvasSelection'
 import { useCanvasClipboard } from '@/composables/useCanvasClipboard'
 import { useCanvasDrop } from '@/composables/useCanvasDrop'
@@ -60,15 +55,14 @@ import type { ContextMenuItem, ContextMenuPosition } from '@/types/canvas-intera
 const router = useRouter()
 const route = useRoute()
 const { viewport, zoomIn, zoomOut, fitView, updateNodeInternals, screenToFlowCoordinate } = useVueFlow()
+const authStore = useAuthStore()
+const { openLoginModal } = useLoginModalStore()
 
 // 注册自定义节点类型
 const nodeTypes = {
   text: markRaw(TextNode),
-  imageConfig: markRaw(ImageConfigNode),
   image: markRaw(ImageNode),
-  videoConfig: markRaw(VideoConfigNode),
   video: markRaw(VideoNode),
-  llmConfig: markRaw(LlmConfigNode),
 } as any
 
 // 注册自定义边类型
@@ -85,16 +79,18 @@ const {
   currentWorkflowDetail,
   workflowList,
   reloadWorkflowList,
+  loadSession,
   fetchWorkflowDetail,
   loadWorkflowDetail,
   applyWorkflowVersionToCanvas,
   autosaveWorkflow,
   resetCurrentWorkflowState,
+  renameSession,
+  createSession,
 } = useWorkflowPersistence()
 
 // UI 状态
 const showNodeMenu = ref(false)
-const showTemplatePanel = ref(false)
 const showWorkflowLibraryPanel = ref(false)
 const workflowName = ref('')
 const workflowCode = ref('')
@@ -136,21 +132,6 @@ const autosaveInFlight = ref<Promise<void> | null>(null)
 // 头部标题重命名
 const renamingTitle = ref(false)
 const renameTitleInput = ref('')
-
-interface WorkflowTemplateNode {
-  id: string
-  type: WorkflowNodeType
-  position: WorkflowCanvasPosition
-  data: Record<string, unknown>
-  newId?: string
-}
-
-interface WorkflowTemplateDefinition {
-  createNodes: (startPosition: WorkflowCanvasPosition) => {
-    nodes: WorkflowTemplateNode[]
-    edges: WorkflowCanvasEdge[]
-  }
-}
 
 interface WorkflowNodeOption {
   type: WorkflowNodeType
@@ -212,9 +193,8 @@ const submitRenameTitle = async () => {
   }
 
   try {
-    const detail = await updateWorkflowDefinition(currentWorkflowId.value, { name: nextTitle })
-    currentWorkflowDetail.value = detail
-    workflowName.value = detail.definition.name
+    await renameSession(nextTitle)
+    workflowName.value = nextTitle
   } catch (error) {
     console.error('重命名工作流失败', error)
     ElMessage.error('重命名失败，请稍后重试')
@@ -292,7 +272,7 @@ const clearAutosaveTimer = () => {
 
 const syncWorkflowRouteQuery = async (workflowId?: string) => {
   const nextWorkflowId = String(workflowId || '').trim()
-  const currentQueryWorkflowId = String(route.query.workflowId || '').trim()
+  const currentQueryWorkflowId = String(route.query.workflowId || route.query.sessionId || '').trim()
   const nextVersionId = String(selectedWorkflowVersionId.value || '').trim()
   const currentQueryVersionId = String(route.query.versionId || '').trim()
 
@@ -303,6 +283,7 @@ const syncWorkflowRouteQuery = async (workflowId?: string) => {
   const nextQuery = { ...route.query }
   if (nextWorkflowId) {
     nextQuery.workflowId = nextWorkflowId
+    delete nextQuery.sessionId
   } else {
     delete nextQuery.workflowId
   }
@@ -386,49 +367,15 @@ const handleCreateWorkflow = () => {
   void createWorkflowAction.run()
 }
 
-// 添加工作流模板
-const handleAddWorkflow = (workflow: WorkflowTemplateDefinition) => {
-  const cx = -viewport.value.x / viewport.value.zoom + (window.innerWidth / 2) / viewport.value.zoom
-  const cy = -viewport.value.y / viewport.value.zoom + (window.innerHeight / 2) / viewport.value.zoom
-  const start = { x: cx - 300, y: cy - 200 }
-  const { nodes: newNodes, edges: newEdges } = workflow.createNodes(start)
-
-  newNodes.forEach((node) => {
-    const id = addNode(node.type, node.position, node.data)
-    newEdges.forEach((edge) => {
-      if (edge.source === node.id) edge.source = id
-      if (edge.target === node.id) edge.target = id
-    })
-    node.newId = id
-  })
-
-  setTimeout(() => {
-    newEdges.forEach(edge => {
-      addEdge({
-        source: edge.source,
-        target: edge.target,
-        sourceHandle: edge.sourceHandle || 'right',
-        targetHandle: edge.targetHandle || 'left',
-        type: edge.type,
-        data: edge.data,
-      })
-    })
-    newNodes.forEach(node => {
-      if (node.newId) {
-        updateNodeInternals([node.newId])
-      }
-    })
-  }, 100)
-
-  showTemplatePanel.value = false
+const handleAssistantSessionChange = (sessionId: string) => {
+  const normalizedSessionId = String(sessionId || '').trim()
+  if (!normalizedSessionId || normalizedSessionId === currentWorkflowId.value) return
+  void tryLoadWorkflowByRoute(normalizedSessionId)
 }
 
 // 节点类型菜单选项
 const nodeTypeOptions: WorkflowNodeOption[] = [
   { type: 'text', name: '文本节点', color: '#3b82f6', icon: 'M4 6h16M4 12h8m-8 6h16' },
-  { type: 'imageConfig', name: '文生图配置', color: '#22c55e', icon: 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z' },
-  { type: 'videoConfig', name: '视频生成配置', color: '#f59e0b', icon: 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z' },
-  { type: 'llmConfig', name: 'LLM 文本生成', color: '#a855f7', icon: 'M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z' },
   { type: 'image', name: '图片节点', color: '#8b5cf6', icon: 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z' },
   { type: 'video', name: '视频节点', color: '#ef4444', icon: 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z' },
 ]
@@ -436,8 +383,8 @@ const nodeTypeOptions: WorkflowNodeOption[] = [
 // 工具栏按钮
 const tools = [
   { id: 'text', name: '文本', icon: 'M4 6h16M4 12h8m-8 6h16', action: () => addNewNode('text') },
-  { id: 'imageConfig', name: '文生图', icon: 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z', action: () => addNewNode('imageConfig') },
-  { id: 'videoConfig', name: '视频生成', icon: 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z', action: () => addNewNode('videoConfig') },
+  { id: 'image', name: '图片', icon: 'M4 16l4.586-4.586a2 2 0 002.828 0L16 16m-2-2l1.586-1.586a2 2 0 002.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 002-2v12a2 2 0 002-2z', action: () => addNewNode('image') },
+  { id: 'video', name: '视频', icon: 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 002-2v8a2 2 0 002-2z', action: () => addNewNode('video') },
 ]
 
 // 添加新节点
@@ -459,16 +406,22 @@ const applyTypedEdgeConnection = (params: WorkflowAddEdgeParams) => {
   const sourceNode = nodes.value.find(n => n.id === params.source)
   const targetNode = nodes.value.find(n => n.id === params.target)
 
-  if (sourceNode?.type === 'text' && targetNode?.type === 'imageConfig') {
-    const existing = edges.value.filter(e => e.target === params.target && e.type === 'promptOrder')
-    addEdge({ ...params, type: 'promptOrder', data: { promptOrder: existing.length + 1 } })
-  } else if (sourceNode?.type === 'image' && targetNode?.type === 'imageConfig') {
-    const existing = edges.value.filter(e => e.target === params.target && e.type === 'imageOrder')
-    addEdge({ ...params, type: 'imageOrder', data: { imageOrder: existing.length + 1 } })
-  } else if (sourceNode?.type === 'image' && targetNode?.type === 'videoConfig') {
-    addEdge({ ...params, type: 'imageRole', data: { imageRole: 'first_frame_image' } })
-  } else if (sourceNode?.type === 'text' && targetNode?.type === 'videoConfig') {
-    addEdge({ ...params, type: 'promptOrder', data: { promptOrder: 1 } })
+  const nextOrder = (type: 'promptOrder' | 'imageOrder') => {
+    const orders = edges.value
+      .filter(edge => edge.target === params.target && edge.type === type)
+      .map(edge => Number((edge.data as any)?.[type]))
+      .filter(Number.isInteger)
+    return Math.max(0, ...orders) + 1
+  }
+
+  if (sourceNode?.type === 'text' && (targetNode?.type === 'image' || targetNode?.type === 'video')) {
+    addEdge({ ...params, type: 'promptOrder', data: { promptOrder: nextOrder('promptOrder') } })
+  } else if (sourceNode?.type === 'image' && targetNode?.type === 'image') {
+    addEdge({ ...params, type: 'imageOrder', data: { imageOrder: nextOrder('imageOrder') } })
+  } else if (sourceNode?.type === 'image' && targetNode?.type === 'video') {
+    addEdge({ ...params, type: 'imageRole', data: { imageRole: 'reference' } })
+  } else if (sourceNode?.type === 'text' && targetNode?.type === 'video') {
+    addEdge({ ...params, type: 'promptOrder', data: { promptOrder: nextOrder('promptOrder') } })
   } else {
     addEdge(params)
   }
@@ -598,6 +551,11 @@ const {
     keyword: workflowListKeyword.value || undefined,
   })
 })
+
+const openWorkflowLibrary = () => {
+  showWorkflowLibraryPanel.value = true
+  void handleRefreshWorkflowList()
+}
 
 const loadWorkflowAction = useAsyncAction(async (workflow: WorkflowDefinitionSummary) => {
   const versionId = selectedLibraryWorkflowId.value === workflow.id
@@ -766,7 +724,6 @@ const openPaneContextMenu = (event: MouseEvent) => {
     { id: 'add-text', label: '新建文本', onClick: () => addNode('text', flowPos) },
     { id: 'add-image', label: '新建图片', onClick: () => addNode('image', flowPos) },
     { id: 'add-video', label: '新建视频', onClick: () => addNode('video', flowPos) },
-    { id: 'add-image-config', label: '新建文生图配置', onClick: () => addNode('imageConfig', flowPos) },
     { id: 'divider', label: '', type: 'divider' },
     {
       id: 'paste',
@@ -807,29 +764,88 @@ useShortcut('CmdOrCtrl+V', () => {
   pasteFromSlot()
 })
 
-// 助手面板（复用 canana 视图的 RightPanel）
-const { isPanelCollapsed: isAssistantCollapsed, togglePanel: toggleAssistantPanel } = useChatSessions()
+const isAssistantCollapsed = ref(false)
 const pendingAssistantMessage = ref('')
-
-// 助手生成的图片落到画布：在视口中心创建 image 节点
-const handleAssistantAddImage = ({ url }: { url: string }) => {
-  if (!url) return
-  const center = screenToFlowCoordinate({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
-  addNode('image', center, { url, label: '助手生成' })
+const selectedAgentModel = ref('')
+const toggleAssistantPanel = () => {
+  isAssistantCollapsed.value = !isAssistantCollapsed.value
 }
 
-onMounted(() => {
+const clearPendingAssistantMessage = () => {
+  pendingAssistantMessage.value = ''
+  window.sessionStorage.removeItem('adflow:workflow:pending-message')
+}
+
+const ensureWorkflowAuth = async () => {
+  await authStore.loadSession()
+  if (authStore.isLoggedIn.value) return true
+  openLoginModal('workflow-session-create')
+  return false
+}
+
+const createBareWorkflowSession = async () => {
+  if (currentWorkflowId.value || route.query.workflowId || route.query.sessionId) return
+  if (!await ensureWorkflowAuth()) return
+  try {
+    resetCurrentWorkflowState()
+    const title = pendingAssistantMessage.value?.slice(0, 30) || '未命名创作'
+    const session = await createSession(title)
+    await syncWorkflowRouteQuery(session.session_id)
+  } catch (error: any) {
+    ElMessage.error(error?.message || '创建 Agent 会话失败')
+  }
+}
+
+const handleAuthLoginSuccess = () => {
+  void createBareWorkflowSession()
+}
+
+const handleAssistantAddAsset = (asset: AgentAsset) => {
+  const center = screenToFlowCoordinate({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
+  addNode(asset.content_type?.startsWith('video/') ? 'video' : 'image', center, {
+    url: assetUrl(asset),
+    label: '助手生成',
+    media_ref: {
+      task_type: asset.task_type,
+      task_id: asset.task_id,
+      asset_id: asset.asset_id,
+    },
+  })
+}
+
+const handleAssistantCanvasUpdated = (event: { revision: number; mutationId: string }) => {
+  if (!currentWorkflowId.value || event.revision <= activeAgentCanvasRevision.value) return
+  void loadSession(currentWorkflowId.value).catch(error => {
+    console.error('同步 Agent 创建的画布卡片失败', error)
+  })
+}
+
+onMounted(async () => {
   initSampleData()
   initHistory()
   initialCanvasBaselineSnapshot.value = currentCanvasSnapshot.value
 
   window.addEventListener('keydown', handleSpaceDown)
   window.addEventListener('keyup', handleSpaceUp)
+  window.addEventListener(AUTH_LOGIN_SUCCESS_EVENT, handleAuthLoginSuccess)
 
-  const initialWorkflowId = String(route.query.workflowId || '').trim()
+  const initialWorkflowId = String(route.query.workflowId || route.query.sessionId || '').trim()
   const initialVersionId = String(route.query.versionId || '').trim()
-  if (initialWorkflowId) {
-    void tryLoadWorkflowByRoute(initialWorkflowId, {
+  const pendingRaw = window.sessionStorage.getItem('adflow:workflow:pending-message')
+  if (pendingRaw) {
+    try {
+      const pending = JSON.parse(pendingRaw)
+      pendingAssistantMessage.value = String(pending?.text || '').trim()
+      selectedAgentModel.value = String(pending?.model_id || '').trim()
+    } catch {
+      clearPendingAssistantMessage()
+    }
+  }
+
+  if (pendingAssistantMessage.value || !initialWorkflowId) {
+    await createBareWorkflowSession()
+  } else if (await ensureWorkflowAuth()) {
+    await tryLoadWorkflowByRoute(initialWorkflowId, {
       versionId: initialVersionId || undefined,
     })
   }
@@ -840,6 +856,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleSpaceDown)
   window.removeEventListener('keyup', handleSpaceUp)
+  window.removeEventListener(AUTH_LOGIN_SUCCESS_EVENT, handleAuthLoginSuccess)
   clearAutosaveTimer()
 })
 
@@ -1014,17 +1031,15 @@ watch(currentCanvasSnapshot, () => {
               </svg>
             </button>
 
+
             <button
               class="wf-btn wf-btn-icon"
-              :class="{ active: showTemplatePanel }"
-              @click="showTemplatePanel = !showTemplatePanel"
-              title="工作流模板"
+              :class="{ active: showWorkflowLibraryPanel }"
+              @click="openWorkflowLibrary"
+              title="打开工作流"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
-                <rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
-                <rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
-                <rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
+                <path d="M3 7h6l2 2h10v10H3V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
               </svg>
             </button>
 
@@ -1094,29 +1109,6 @@ watch(currentCanvasSnapshot, () => {
           </div>
         </div>
 
-        <Transition name="wf-panel">
-          <div v-if="showTemplatePanel" class="wf-template-panel" @click.self="showTemplatePanel = false">
-            <div class="wf-template-panel-inner">
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-                <span style="font-size: 14px; font-weight: 500; color: var(--text-primary);">工作流模板</span>
-                <button class="wf-btn wf-btn-sm" @click="showTemplatePanel = false">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                </button>
-              </div>
-              <div class="wf-template-list">
-                <div
-                  v-for="tpl in WORKFLOW_TEMPLATES"
-                  :key="tpl.id"
-                  class="wf-template-card"
-                  @click="handleAddWorkflow(tpl)"
-                >
-                  <div class="wf-template-card-title">{{ tpl.name }}</div>
-                  <div class="wf-template-card-desc">{{ tpl.description }}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </Transition>
 
         <Transition name="wf-panel">
           <div v-if="showWorkflowLibraryPanel" class="wf-template-panel" @click.self="showWorkflowLibraryPanel = false">
@@ -1226,15 +1218,18 @@ watch(currentCanvasSnapshot, () => {
 <!--        />-->
       </div>
 
-      <!-- 右侧助手面板（复用 canana 视图的 RightPanel）：fixed 定位 + translateX 动画 -->
+      <!-- 右侧 Agent 面板 -->
       <aside class="workflow-assistant-aside">
-        <RightPanel
+        <AgentPanel
+          :session-id="currentWorkflowId || ''"
           :title="currentWorkflowTitle"
-          :visible="!isAssistantCollapsed"
           :initial-message="pendingAssistantMessage"
+          :model-id="selectedAgentModel"
           @close="toggleAssistantPanel"
-          @message-received="pendingAssistantMessage = ''"
-          @add-image-to-canvas="handleAssistantAddImage"
+          @add-asset="handleAssistantAddAsset"
+          @canvas-updated="handleAssistantCanvasUpdated"
+          @session-change="handleAssistantSessionChange"
+          @initial-message-consumed="clearPendingAssistantMessage"
         />
       </aside>
 

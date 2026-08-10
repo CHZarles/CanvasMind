@@ -10,8 +10,8 @@
  */
 import { useVueFlow } from '@vue-flow/core'
 import { ElMessage } from 'element-plus'
-import { uploadStorageFile } from '@/api/storage'
-import { addNode } from '@/views/workflow/composables/useWorkflowCanvas'
+import { addNode, updateNode } from '@/views/workflow/composables/useWorkflowCanvas'
+import { uploadNodeMedia } from '@/views/workflow/composables/useAgentRuntime'
 import type { DroppedFileDescriptor, DroppedFileKind } from '@/types/canvas-interaction'
 
 const MULTI_FILE_X_STEP = 40
@@ -50,18 +50,19 @@ export function useCanvasDrop() {
       xOffset += MULTI_FILE_X_STEP
       dropped.push({ file, kind, position })
 
+      const nodeId = addNode(kind, position, {
+        url: URL.createObjectURL(file),
+        label: file.name,
+        loading: true,
+        ...(kind === 'video' ? { duration: 0 } : {}),
+      })
       try {
-        const uploaded = await uploadStorageFile(file, 'asset')
-        if (!uploaded) {
-          ElMessage.error(`${file.name} 上传失败`)
-          continue
-        }
-        if (kind === 'image') {
-          addNode('image', position, { url: uploaded.publicUrl, label: file.name })
-        } else {
-          addNode('video', position, { url: uploaded.publicUrl, duration: 0, label: file.name })
-        }
+        await uploadNodeMedia(nodeId, file)
       } catch (err) {
+        updateNode(nodeId, {
+          loading: false,
+          error: err instanceof Error ? err.message : '上传失败',
+        })
         ElMessage.error(`${file.name} 上传失败`)
         // eslint-disable-next-line no-console
         console.error('[useCanvasDrop] upload failed', err)

@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
-import { useAuthStore } from '@/stores/auth'
-import { useLoginModalStore } from '@/stores/login-modal'
 import { useSystemSettingsStore } from '@/stores/system-settings'
 import { getModelByName } from '@/config/models'
 import type { ModelCapabilityFlags } from '@/shared/provider-capability'
@@ -47,6 +45,8 @@ interface Props {
   placeholderOverride?: string
   /** 隐藏 Agent 工具栏内的技能（"使用技能"）下拉，节点下方场景默认隐藏 */
   hideSkillSelector?: boolean
+  /** 隐藏旧的自动、灵感搜索和创意设计开关 */
+  hideAgentActions?: boolean
   /** 隐藏 Sidebar Agent 模式的附件按钮 + 参考图上传/缩略图区，避免在不需要图上下文的节点（如 TextNode）露出 */
   hideImageUpload?: boolean
   /** 由外部塞入的参考图（如 ImageNode 把上游连线的图作为参考图），会同步进 imageReferenceImages */
@@ -60,6 +60,7 @@ interface GeneratorSendOptions {
   modelKey?: string
   ratio?: string
   resolution?: string
+  size?: string
   duration?: string
   feature?: string
   skill?: string
@@ -85,6 +86,7 @@ interface GeneratorDraftPayload {
 interface ExposedImageToolbarInstance {
   currentModelVersion: string
   currentSize: string
+  currentRequestSize: string
   currentCount: number
 }
 
@@ -113,6 +115,7 @@ const props = withDefaults(defineProps<Props>(), {
   hideTypeSelector: false,
   placeholderOverride: '',
   hideSkillSelector: false,
+  hideAgentActions: false,
   hideImageUpload: false,
   externalReferenceImages: () => [],
   verboseToolbar: false,
@@ -156,9 +159,6 @@ watch(
   { immediate: true, deep: true },
 )
 
-// 登录态与全局登录弹窗。
-const authStore = useAuthStore()
-const { openLoginModal } = useLoginModalStore()
 const { publicSystemSettings } = useSystemSettingsStore()
 
 // 从本地恢复最近一次创作类型，详情页等显式传入初始值时优先使用外部值。
@@ -331,12 +331,6 @@ const handleSubmit = () => {
   const message = inputValue.value.trim()
   if (!message) return
 
-  // 未登录时直接弹出登录框，并保留当前输入内容。
-  if (!authStore.isLoggedIn.value) {
-    openLoginModal('content-generator-submit')
-    return
-  }
-
   // 触发发送事件
   if (currentType.value === 'image') {
     const toolbar = imageToolbarRef.value
@@ -346,6 +340,7 @@ const handleSubmit = () => {
       modelKey: toolbar?.currentModelVersion || '',
       ratio: toolbar?.currentSize || '',
       resolution: sizeConfig?.quality || '',
+      size: toolbar?.currentRequestSize || '',
       referenceImages: [...imageReferenceImages.value],
       count: toolbar?.currentCount || 1,
     }
@@ -355,6 +350,7 @@ const handleSubmit = () => {
     const sizeConfig = toolbar.getCurrentSizeConfig()
     emit('send', message, currentType.value, {
       model: toolbar.getCurrentModelLabel(),
+      modelKey: toolbar.currentModelVersion,
       ratio: toolbar.currentSize,
       resolution: sizeConfig.quality,
       duration: toolbar.currentDuration,
@@ -466,6 +462,7 @@ defineExpose({
   handleSubmit,
   applyDraft,
   submitDraft,
+  openImageReferencePicker,
 })
 
 // 根据创作类型返回不同的 placeholder
@@ -755,7 +752,7 @@ const clearCollapsedReferences = () => {
   }
 }
 
-const openImageReferencePicker = () => {
+function openImageReferencePicker() {
   imageReferenceInputRef.value?.click()
 }
 
@@ -1193,11 +1190,11 @@ onUnmounted(() => {
                 :allowed-model-keys="conversationEntrySettings.modelSelector.allowedModelKeys"
                 :default-assistant-key="conversationEntrySettings.assistantSelector.defaultAssistantKey"
                 :allowed-assistant-keys="conversationEntrySettings.assistantSelector.allowedAssistantKeys"
-                :show-auto-action="conversationEntrySettings.actions.auto.visible"
+                :show-auto-action="!hideAgentActions && conversationEntrySettings.actions.auto.visible"
                 :auto-action-enabled="conversationEntrySettings.actions.auto.defaultEnabled"
-                :show-inspiration-action="conversationEntrySettings.actions.inspiration.visible"
+                :show-inspiration-action="!hideAgentActions && conversationEntrySettings.actions.inspiration.visible"
                 :inspiration-action-enabled="conversationEntrySettings.actions.inspiration.defaultEnabled"
-                :show-creative-design-action="conversationEntrySettings.actions.creativeDesign.visible"
+                :show-creative-design-action="!hideAgentActions && conversationEntrySettings.actions.creativeDesign.visible"
                 :creative-design-action-enabled="conversationEntrySettings.actions.creativeDesign.defaultEnabled"
                 @panelOpen="handleAgentToolbarPanelOpen"
               />
@@ -1245,11 +1242,11 @@ onUnmounted(() => {
                 :allowed-model-keys="conversationEntrySettings.modelSelector.allowedModelKeys"
                 :default-assistant-key="conversationEntrySettings.assistantSelector.defaultAssistantKey"
                 :allowed-assistant-keys="conversationEntrySettings.assistantSelector.allowedAssistantKeys"
-                :show-auto-action="conversationEntrySettings.actions.auto.visible"
+                :show-auto-action="!hideAgentActions && conversationEntrySettings.actions.auto.visible"
                 :auto-action-enabled="conversationEntrySettings.actions.auto.defaultEnabled"
-                :show-inspiration-action="conversationEntrySettings.actions.inspiration.visible"
+                :show-inspiration-action="!hideAgentActions && conversationEntrySettings.actions.inspiration.visible"
                 :inspiration-action-enabled="conversationEntrySettings.actions.inspiration.defaultEnabled"
-                :show-creative-design-action="conversationEntrySettings.actions.creativeDesign.visible"
+                :show-creative-design-action="!hideAgentActions && conversationEntrySettings.actions.creativeDesign.visible"
                 :creative-design-action-enabled="conversationEntrySettings.actions.creativeDesign.defaultEnabled"
                 @panelOpen="handleAgentToolbarPanelOpen"
               />
