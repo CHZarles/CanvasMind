@@ -28,6 +28,8 @@ import { useNodeTitleEdit } from '@/composables/useNodeTitleEdit'
 import {
   updateNode,
   removeNode,
+  removeEdge,
+  updateEdge,
   duplicateNode,
   addNode,
   addEdge,
@@ -42,6 +44,7 @@ import {
 } from '../../composables/useAgentRuntime'
 import { loadMediaPreview } from '../../api/agent'
 import { loadPublicModelCatalog } from '@/config/models'
+import { saveAgentCanvasNow } from '../../composables/useWorkflowPersistence'
 
 const props = defineProps<{
   id: string
@@ -95,9 +98,65 @@ watch(
 watch(() => props.data?.url, (url) => void syncPreviewUrl(url), { immediate: true })
 onBeforeUnmount(() => {
   if (ownedPreviewUrl) URL.revokeObjectURL(ownedPreviewUrl)
+  ownedReferencePreviewUrls.forEach(url => URL.revokeObjectURL(url))
 })
 
 const hasUpstream = computed(() => edges.value.some((e) => e.target === props.id))
+const videoRoleOrder: Record<string, number> = {
+  first_frame: 0,
+  first_frame_image: 0,
+  last_frame: 1,
+  last_frame_image: 1,
+  reference: 2,
+  input_reference: 2,
+}
+const sourceReferenceUrls = computed(() => {
+  const slots = ['', '']
+  const references: string[] = []
+  edges.value
+    .filter(edge => edge.target === props.id && edge.type === 'imageRole')
+    .forEach(edge => {
+      const node = nodes.value.find(item => item.id === edge.source)
+      if (node?.type !== 'image') return
+      const url = String((node.data as { url?: string })?.url || '')
+      const order = videoRoleOrder[String((edge.data as any)?.imageRole || 'reference')] ?? 2
+      if (order < 2) slots[order] = url
+      else if (url) references.push(url)
+    })
+  references.forEach(url => {
+    const emptyIndex = slots.findIndex(item => !item)
+    if (emptyIndex >= 0) slots[emptyIndex] = url
+  })
+  return slots
+})
+const upstreamReferenceUrls = ref<string[]>([])
+const ownedReferencePreviewUrls = new Set<string>()
+let referencePreviewRequest = 0
+
+watch(sourceReferenceUrls, async sources => {
+  const request = ++referencePreviewRequest
+  ownedReferencePreviewUrls.forEach(url => URL.revokeObjectURL(url))
+  ownedReferencePreviewUrls.clear()
+  const resolved = await Promise.all(sources.map(async source => {
+    if (!source) return null
+    try {
+      const url = await loadMediaPreview(source)
+      return { source, url, owned: url !== source && url.startsWith('blob:') }
+    } catch {
+      return null
+    }
+  }))
+  if (request !== referencePreviewRequest) {
+    resolved.forEach(item => {
+      if (item?.owned) URL.revokeObjectURL(item.url)
+    })
+    return
+  }
+  upstreamReferenceUrls.value = resolved.map(item => item?.url || '')
+  resolved.forEach(item => {
+    if (item?.owned) ownedReferencePreviewUrls.add(item.url)
+  })
+}, { immediate: true })
 
 const showLoading = computed(() => isLoading.value)
 const showError = computed(() => !isLoading.value && !!errorMsg.value)
@@ -174,6 +233,75 @@ onMounted(() => {
 })
 
 const isGenerating = ref(false)
+let videoFrameMutationError: Error | null = null
+let pendingVideoFrameChange = Promise.resolve()
+const normalizeVideoRole = (value: string) => value === 'first_frame_image'
+  ? 'first_frame'
+  : value === 'last_frame_image'
+    ? 'last_frame'
+    : value
+const videoEdgesByRole = (role: 'first_frame' | 'last_frame') => edges.value.filter(edge =>
+  edge.target === props.id
+  && edge.type === 'imageRole'
+  && normalizeVideoRole(String((edge.data as any)?.imageRole || 'reference')) === role,
+)
+
+const syncVideoFrame = async (role: 'first_frame' | 'last_frame', file: File | null) => {
+  if (!file) {
+    videoEdgesByRole(role).forEach(edge => removeEdge(edge.id))
+    await saveAgentCanvasNow()
+    return
+  }
+
+  const target = nodes.value.find(node => node.id === props.id)
+  if (!target) throw new Error('视频节点不存在')
+  const inputNodeId = addNode('image', {
+    x: target.position.x - 420,
+    y: target.position.y + (role === 'last_frame' ? 220 : 0),
+  }, { label: role === 'first_frame' ? '上传首帧' : '上传尾帧' })
+  try {
+    await uploadNodeMedia(inputNodeId, file)
+  } catch (error) {
+    removeNode(inputNodeId)
+    throw error
+  }
+  videoEdgesByRole(role).forEach(edge => removeEdge(edge.id))
+  addEdge({
+    source: inputNodeId,
+    target: props.id,
+    sourceHandle: 'right',
+    targetHandle: 'left',
+    type: 'imageRole',
+    data: { imageRole: role },
+  })
+  await saveAgentCanvasNow()
+}
+
+const queueVideoFrameChange = (change: () => Promise<void>) => {
+  pendingVideoFrameChange = pendingVideoFrameChange.then(async () => {
+    try {
+      await change()
+      videoFrameMutationError = null
+    } catch (error) {
+      videoFrameMutationError = error instanceof Error ? error : new Error('首尾帧上传失败')
+      ElMessage.error(videoFrameMutationError.message)
+    }
+  })
+}
+const handleVideoFrameChange = (role: 'first_frame' | 'last_frame', file: File | null) => {
+  queueVideoFrameChange(() => syncVideoFrame(role, file))
+}
+const handleVideoFramesSwap = () => {
+  queueVideoFrameChange(async () => {
+    const first = videoEdgesByRole('first_frame')[0]
+    const last = videoEdgesByRole('last_frame')[0]
+    if (!first || !last) return
+    updateEdge(first.id, { data: { imageRole: 'last_frame' } })
+    updateEdge(last.id, { data: { imageRole: 'first_frame' } })
+    await saveAgentCanvasNow()
+  })
+}
+
 const handlePromptSend = async (
   text: string,
   _type: string,
@@ -182,6 +310,8 @@ const handlePromptSend = async (
   if (!text.trim() || isGenerating.value) return
   isGenerating.value = true
   try {
+    await pendingVideoFrameChange
+    if (videoFrameMutationError) throw videoFrameMutationError
     prepareVideoNode(props.id, text, {
       model: options?.modelKey,
       ratio: options?.ratio,
@@ -290,10 +420,13 @@ const handlePromptSend = async (
         :collapsible="false"
         :default-expanded="true"
         initial-creation-type="video"
+        :external-reference-images="upstreamReferenceUrls"
         :hide-type-selector="true"
         :verbose-toolbar="true"
         placeholder-override="描述你想生成的视频画面，按 Enter 发送"
         popup-placement="top"
+        @video-frame-change="handleVideoFrameChange"
+        @video-frames-swap="handleVideoFramesSwap"
         @send="handlePromptSend"
       />
     </div>

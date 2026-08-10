@@ -183,8 +183,8 @@ export const prepareImageNode = (
   prompt: string,
   options: { count?: number; model?: string; size?: string } = {},
 ) => {
-  const hasReferences = edges.value.some(edge => edge.target === nodeId && edge.type === 'imageOrder')
   const current = nodes.value.find(node => node.id === nodeId)?.data as any
+  const hasReferences = Boolean(current?.media_ref) || edges.value.some(edge => edge.target === nodeId && edge.type === 'imageOrder')
   const parameters = { ...(current?.parameters || imageDefaults.value.parameters) }
   if (options.size) parameters.size = options.size
   parameters.output_image_count = Math.max(1, Math.min(15, Number(options.count) || 1))
@@ -202,7 +202,15 @@ export const prepareVideoNode = (
   options: { model?: string; ratio?: string; duration?: string } = {},
 ) => {
   const referenceEdges = edges.value.filter(edge => edge.target === nodeId && edge.type === 'imageRole')
-  const roles = referenceEdges.map(edge => (edge.data as any)?.imageRole)
+  const roleAliases: Record<string, string> = {
+    first_frame_image: 'first_frame',
+    last_frame_image: 'last_frame',
+    input_reference: 'reference',
+  }
+  const roles = referenceEdges.map(edge => {
+    const role = String((edge.data as any)?.imageRole || 'reference')
+    return roleAliases[role] || role
+  })
   const current = nodes.value.find(node => node.id === nodeId)?.data as any
   const model = options.model || current?.model || videoDefaults.value.model
   let mode = !referenceEdges.length
@@ -222,6 +230,10 @@ export const prepareVideoNode = (
   ) {
     mode = 'image_to_video'
     updateEdge(referenceEdges[0].id, { data: { imageRole: 'first_frame' } })
+  }
+  if (Object.keys(modes).length && !modes[mode]) {
+    const label = findCatalogModel(model, 'VIDEO')?.label || model
+    throw new Error(`${label} 不支持${mode === 'first_last_frame_to_video' ? '首尾帧' : '当前'}生视频模式`)
   }
   if (options.ratio) parameters.ratio = options.ratio
   const duration = Number.parseInt(String(options.duration || ''), 10)

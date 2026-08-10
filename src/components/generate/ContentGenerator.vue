@@ -125,6 +125,8 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   // 发送消息事件
   send: [message: string, type: CreationType, options?: GeneratorSendOptions]
+  videoFrameChange: [role: 'first_frame' | 'last_frame', file: File | null]
+  videoFramesSwap: []
   // 面板宽度调整事件
   resize: [width: number]
   /** 展开状态变化（true=展开），供父级调整预览区留白等 */
@@ -140,24 +142,6 @@ const imageReferenceInputRef = ref<HTMLInputElement | null>(null)
 const videoFirstFrameInputRef = ref<HTMLInputElement | null>(null)
 const videoLastFrameInputRef = ref<HTMLInputElement | null>(null)
 const IMAGE_REFERENCE_LIMIT = 9
-
-// 外部塞入的参考图（如节点画布把上游连线的图作为参考图）→ 同步进 imageReferenceImages
-// 用 deep 监听，让 ImageNode 切换上游连线时实时反映到输入框
-watch(
-  () => props.externalReferenceImages,
-  (urls) => {
-    if (!Array.isArray(urls)) return
-    const normalized = urls.filter(Boolean).slice(0, IMAGE_REFERENCE_LIMIT)
-    // 仅在差异时写入，避免循环
-    const same =
-      normalized.length === imageReferenceImages.value.length &&
-      normalized.every((u, i) => u === imageReferenceImages.value[i])
-    if (!same) {
-      imageReferenceImages.value = normalized
-    }
-  },
-  { immediate: true, deep: true },
-)
 
 const { publicSystemSettings } = useSystemSettingsStore()
 
@@ -203,6 +187,25 @@ const readDefaultCreationType = () => {
 
 const storedCreationType = readStoredCreationType()
 const currentType = ref<CreationType>(props.initialCreationType ?? storedCreationType ?? readDefaultCreationType())
+
+// 外部塞入的参考图跟随节点类型显示：图片节点用图片列表，视频节点用首尾帧槽位。
+watch(
+  () => props.externalReferenceImages,
+  (urls) => {
+    if (!Array.isArray(urls)) return
+    if (currentType.value === 'video') {
+      videoFirstFrameImage.value = urls[0] || ''
+      videoLastFrameImage.value = urls[1] || ''
+      return
+    }
+    const normalized = urls.filter(Boolean).slice(0, IMAGE_REFERENCE_LIMIT)
+    const same =
+      normalized.length === imageReferenceImages.value.length
+      && normalized.every((url, index) => url === imageReferenceImages.value[index])
+    if (!same) imageReferenceImages.value = normalized
+  },
+  { immediate: true, deep: true },
+)
 
 // 组件引用（用于弹窗互斥）
 const typeSelectorRef = ref<InstanceType<typeof TypeSelector> | null>(null)
@@ -354,7 +357,8 @@ const handleSubmit = () => {
       ratio: toolbar.currentSize,
       resolution: sizeConfig.quality,
       duration: toolbar.currentDuration,
-      feature: toolbar.currentFeature
+      feature: toolbar.currentFeature,
+      referenceImages: [videoFirstFrameImage.value, videoLastFrameImage.value],
     })
   } else if (currentType.value === 'agent') {
     const toolbar = agentToolbarExpandRef.value || agentToolbarRef.value
@@ -723,21 +727,33 @@ const removeImageReference = (index: number) => {
 }
 
 const handleVideoFirstFrameChange = async (event: Event) => {
+  const file = (event.target as HTMLInputElement | null)?.files?.[0] || null
   const imageDataList = await resolveSelectedImageDataList(event)
   videoFirstFrameImage.value = imageDataList[0] || ''
+  emit('videoFrameChange', 'first_frame', file)
 }
 
 const handleVideoLastFrameChange = async (event: Event) => {
+  const file = (event.target as HTMLInputElement | null)?.files?.[0] || null
   const imageDataList = await resolveSelectedImageDataList(event)
   videoLastFrameImage.value = imageDataList[0] || ''
+  emit('videoFrameChange', 'last_frame', file)
 }
 
 const clearVideoFirstFrame = () => {
   videoFirstFrameImage.value = ''
+  emit('videoFrameChange', 'first_frame', null)
 }
 
 const clearVideoLastFrame = () => {
   videoLastFrameImage.value = ''
+  emit('videoFrameChange', 'last_frame', null)
+}
+
+const swapVideoFrames = () => {
+  if (!videoFirstFrameImage.value || !videoLastFrameImage.value) return
+  ;[videoFirstFrameImage.value, videoLastFrameImage.value] = [videoLastFrameImage.value, videoFirstFrameImage.value]
+  emit('videoFramesSwap')
 }
 
 const clearCollapsedReferences = () => {
@@ -985,6 +1001,8 @@ onUnmounted(() => {
 
           <!-- 交换按钮 -->
           <button class="lv-btn lv-btn-secondary lv-btn-size-default lv-btn-shape-square lv-btn-icon-only button-c41WFq swap-button"
+                  :disabled="!videoFirstFrameImage || !videoLastFrameImage"
+                  @click="swapVideoFrames"
                   type="button">
             <svg width="1em" height="1em" viewBox="0 0 24 24"
                  preserveAspectRatio="xMidYMid meet"

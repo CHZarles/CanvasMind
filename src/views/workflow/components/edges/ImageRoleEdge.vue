@@ -31,12 +31,22 @@ onEdgeMouseEnter(({ edge }) => { if (edge.id === props.id) isHover.value = true 
 onEdgeMouseLeave(({ edge }) => { if (edge.id === props.id) isHover.value = false })
 
 const roleOptions = [
-  { label: '首帧', key: 'first_frame_image' },
-  { label: '尾帧', key: 'last_frame_image' },
-  { label: '参考图', key: 'input_reference' }
+  { label: '首帧', key: 'first_frame' },
+  { label: '尾帧', key: 'last_frame' },
+  { label: '参考图', key: 'reference' }
 ]
 
-const currentRole = computed(() => props.data?.imageRole || 'first_frame_image')
+const roleAliases: Record<string, string> = {
+  first_frame_image: 'first_frame',
+  last_frame_image: 'last_frame',
+  input_reference: 'reference',
+}
+const normalizeImageRole = (value: unknown) => {
+  const role = String(value || 'first_frame')
+  return roleAliases[role] || role
+}
+
+const currentRole = computed(() => normalizeImageRole(props.data?.imageRole))
 const currentRoleLabel = computed(() => roleOptions.find(o => o.key === currentRole.value)?.label || '首帧')
 
 const path = computed(() => {
@@ -55,15 +65,15 @@ const edgeStyle = computed(() => ({
 }))
 
 const readImageRole = (data: unknown) => (data && typeof data === 'object' && 'imageRole' in data
-  ? String((data as { imageRole?: string }).imageRole || 'first_frame_image')
-  : 'first_frame_image')
+  ? normalizeImageRole((data as { imageRole?: string }).imageRole)
+  : 'first_frame')
 
 const handleSelect = (role: string) => {
-  if (role === 'first_frame_image' || role === 'last_frame_image') {
+  if (role === 'first_frame' || role === 'last_frame') {
     edges.value
       .filter(e => e.target === props.target && e.id !== props.id && readImageRole(e.data) === role)
       .forEach(e => {
-        updateEdgeData(e.id, { imageRole: role === 'first_frame_image' ? 'last_frame_image' : 'first_frame_image' })
+        updateEdgeData(e.id, { imageRole: role === 'first_frame' ? 'last_frame' : 'first_frame' })
       })
   }
   updateEdgeData(props.id, { imageRole: role })
